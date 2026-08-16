@@ -1,0 +1,38 @@
+{
+  "WEATHER_CITY": "Vilnius",
+  "VOICE": "uk-UA-PolinaNeural",
+  "VOICE_RATE": "+25%",
+  "VOICE_PITCH": "+3Hz",
+  "CONFIRM_ACTIONS": true,
+  "BRIEFING_HOUR": 9,
+
+  "PUSH_TO_TALK": false,
+  "PTT_HOTKEY": "ctrl+alt+m",
+  "PTT_TOGGLE_HOTKEY": "ctrl+alt+l",
+  "BRAIN_HOTKEY": "ctrl+alt+b",
+  "BRAIN_DICTATE_LIMIT": 60,
+  "BRAIN_PAUSE_THRESHOLD": 2.5,
+  "TAP_TOGGLE_KEY": "right ctrl",
+  "TAP_MAX_HOLD": 0.4,
+  "TAP_ACTION": "ptt",
+  "PAUSE_THRESHOLD": 0.9,
+
+  "SYS_MONITOR_ENABLED": true,
+  "SYS_MONITOR_INTERVAL": 30,
+  "MONITOR_INTERVAL": 120,
+  "SYS_THRESHOLDS": {
+    "cpu": 92,
+    "ram": 90,
+    "disk_free_gb": 5,
+    "temp": 85,
+    "battery_low": 15
+  },
+
+  "GMAIL_LABELS": ["основна", "друга"],
+  "MONITOR_GMAIL_AUTOSTART": true,
+  "MAIL_TRIAGE_ENABLED": true,
+
+  "GROQ_PRIMARY_MODEL": "openai/gpt-oss-120b",
+  "GROQ_FALLBACK_MODEL": "gemini:gemini-3.1-flash-lite",
+  "VISION_MODEL": "gemini:gemini-3.1-flash-lite"
+}
