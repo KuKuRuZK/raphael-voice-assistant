@@ -1,0 +1,33 @@
+# Рафаель: залежності. Windows, Python 3.10+.
+# Встановлення: pip install -r requirements.txt (або setup.bat)
+
+# Голос: мікрофон, розпізнавання, озвучка
+SpeechRecognition
+PyAudio
+edge-tts
+pygame
+vosk                        # офлайн-розпізнавання, модель качається окремо (див. README)
+
+# Моделі: Groq (Whisper), а чат через OpenAI-сумісний API (Groq, Gemini, Ollama)
+groq
+openai
+
+# Керування ПК
+pyautogui
+pyperclip
+pygetwindow
+keyboard                    # глобальні гарячі клавіші
+psutil
+pystray
+pillow
+
+# Сервіси
+spotipy
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
+slack_sdk
+ddgs                        # тихий веб-пошук
+
+# Тести (не потрібні для роботи)
+pytest

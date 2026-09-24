@@ -27,12 +27,19 @@ watchdog.log
 memory.json
 notes.json
 notes_backup.json
+# тимчасові файли атомарного запису (notes.json.tmp тощо)
+*.tmp
+
+# Службові маркери watchdog (start.bat ↔ lin.py). crash.log ловить *.log вище
+.lin_stop
+.lin_alive
 
 # ── ВЕЛИКЕ І ЗГЕНЕРОВАНЕ ─────────────────────────────────────────────────────
 # Модель Vosk важить 128 МБ, її качають окремо з alphacephei.com
 vosk-model-uk/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Локальні налаштування інструментів
 .claude/

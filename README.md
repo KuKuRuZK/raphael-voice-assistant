@@ -16,7 +16,7 @@ Personal project, built and used daily.
 | **Voice** | wake word or hotkey, ~140 commands, free-form phrasing routed by an LLM |
 | **Speech in** | Whisper → Google → Vosk fallback chain, Vosk works fully offline |
 | **Speech out** | neural TTS (edge-tts), Ukrainian voice |
-| **Mail** | two Gmail accounts, 9-category triage, only what matters is spoken aloud |
+| **Mail** | two Gmail accounts, 10-category triage, only what matters is spoken aloud |
 | **Calendar** | upcoming events, reminders |
 | **Music** | full Spotify control |
 | **Vision** | screenshots described by a vision model on request |
@@ -39,29 +39,54 @@ LLM_PROVIDERS = {
 ```
 
 Models are addressed as `provider:model`, with a fallback on a *different*
-provider so a single outage or rate limit cannot take the assistant down.
+provider so a single outage or rate limit cannot take the assistant down. Any
+error on the primary (rate limit, timeout, 5xx, dropped connection) switches to
+the fallback, and SDK retries are off, so the switch takes seconds rather than
+a minute of silence. Short, unambiguous commands ("пауза", "наступний трек",
+"котра година") skip the model entirely.
 
 **Mail triage as a separate module.** [`mail_triage.py`](mail_triage.py) classifies
-incoming mail into nine categories and archives the noise. It lives outside the
-main file so the rules can be edited and unit-tested without touching a running
-assistant. On a real mailbox it cut 5119 inbox messages down to 400, and only
-two categories are ever spoken aloud.
+incoming mail into ten categories and archives the noise. It lives outside the
+main file so the rules can be edited and tested
+([`tests/test_mail_triage.py`](tests/test_mail_triage.py)) without touching a
+running assistant. On a real mailbox it cut 5119 inbox messages down to 400;
+six categories are spoken aloud, the rest are labelled silently. Sender rules
+look at the address only, never the display name, so a spoofed
+`accounts.google.com <promo@spam.xyz>` is not read out as a security alert.
 
 The ordering of its checks is deliberate and documented in the module: security
 before money, money before noise (a failed payment notice arrives from a sender
 that is otherwise pure marketing), delivery before shops.
 
-**Resilience.** A watchdog restarts crashed components. Every external call is
-wrapped so that a dead API degrades one feature instead of killing the process.
+**Voice safety.** The assistant does not record while it is speaking, so it
+cannot hear itself or be driven by a mail subject it reads aloud. The wake word
+must be a whole word at the start or end of a phrase. Shutdown, restart,
+killing a process and clearing all plans always ask for a spoken yes, and a
+shutdown waits 30 seconds ("скасуй вимкнення" cancels it).
+
+**Resilience.** `start.bat` restarts the process if it crashes; if it dies on
+start five times in a row it stops and points to `crash.log`, where startup
+tracebacks go under `pythonw`. Every external call is wrapped so that a dead API
+degrades one feature instead of killing the process.
 
 ## Running it
 
 ```bash
-pip install -r requirements.txt          # see the imports at the top of lin.py
-cp secrets.example.json secrets.json     # then fill in your own keys
+pip install -r requirements.txt          # or setup.bat
+cp secrets.example.json secrets.json     # Groq + Gemini keys, Spotify app
 python gmail_auth.py                     # Google OAuth, once
 python spotify_auth.py                   # Spotify OAuth, once
 python lin.py
+```
+
+Settings live in `config.json` (models, hotkeys, thresholds). Keys never go
+there: that file is tracked, `secrets.json` is not.
+
+Tests cover the pure logic (mail rules, wake word, reminders, command
+matching) and run on any OS:
+
+```bash
+pytest
 ```
 
 For offline speech recognition, download a Vosk Ukrainian model from

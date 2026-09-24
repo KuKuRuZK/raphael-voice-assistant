@@ -1,0 +1,20 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    # Логіка без Windows-залежностей: правила пошти, розбір фраз.
+    # Сам lin.py тут лише компілюється і проходить pyflakes.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest pyflakes
+      - run: python -m py_compile *.py
+      - run: python -m pyflakes *.py tests/*.py
+      - run: python -m pytest -q
