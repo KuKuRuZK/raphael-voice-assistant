@@ -97,6 +97,10 @@ Raphael then says which mailbox lost access (once a day, or whenever you ask
 about mail or the calendar). Run `gmail_auth.bat` again (`gmail_auth.bat 2` for
 the second mailbox) and the new token is picked up without a restart.
 
+Liking tracks by voice ("лайкни") needs one extra Spotify permission. Tokens
+made before it keep working for everything else; run `spotify_auth.bat` once
+more to enable likes.
+
 Tests run on any OS: the pure logic (mail rules, wake word, reminders, command
 matching) directly, and the whole assistant on stubs of the Windows-only
 libraries (`tests/stubs.py`): confirmations, model fallback, the microphone

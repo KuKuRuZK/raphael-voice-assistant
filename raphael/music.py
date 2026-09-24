@@ -235,6 +235,45 @@ def _spotify_liked(limit: int = 5):
         tts.speak("Не вдалося отримати лайкнуті треки.")
 
 
+def _spotify_save_current(like: bool = True) -> None:
+    """Лайкає трек, що зараз грає (додає в «Улюблені»), або прибирає лайк."""
+    sp = _get_spotipy()
+    if not sp:
+        tts.speak(_spotify_unavailable_msg())
+        return
+    tok = sp.auth_manager.cache_handler.get_cached_token() or {}
+    if "user-library-modify" not in (tok.get("scope") or "").split():
+        tts.speak("Для лайків Spotify має дати ще один дозвіл. Запусти spotify_auth.bat, це один раз.")
+        return
+    try:
+        item = (sp.current_playback() or {}).get("item")
+        if not item:
+            tts.speak("Зараз нічого не грає.")
+            return
+        if item.get("is_local"):
+            tts.speak("Це локальний файл, його в улюблені не додати.")
+            return
+        if item.get("type", "track") != "track" or not item.get("id"):
+            tts.speak("Це не трек, лайкнути не вийде.")
+            return
+        name, track_id = item["name"], item["id"]
+        liked = sp.current_user_saved_tracks_contains([track_id])[0]
+        if like and liked:
+            tts.speak(f"«{name}» вже в улюблених.")
+        elif like:
+            sp.current_user_saved_tracks_add([track_id])
+            tts.speak(f"Лайкнула «{name}».")
+        elif liked:
+            sp.current_user_saved_tracks_delete([track_id])
+            tts.speak(f"Прибрала «{name}» з улюблених.")
+        else:
+            tts.speak(f"«{name}» і так не в улюблених.")
+        log.info(f"Spotify {'like' if like else 'unlike'}: {name}")
+    except Exception as e:
+        log.error(f"Spotify like: {e}")
+        tts.speak("Не вдалося поставити лайк." if like else "Не вдалося прибрати лайк.")
+
+
 def _spotify_pick_device(sp):
     """
     Знаходить пристрій Spotify для керування гучністю.

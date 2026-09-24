@@ -23,6 +23,12 @@ SCOPES = " ".join([
     "playlist-read-collaborative",
 ])
 
+# Необовʼязкові дозволи: spotify_auth.py їх просить, але без них решта працює.
+# Якби «лайки» стояли в SCOPES, старий токен перестав би проходити перевірку,
+# і до повторного входу зламалась би вся музика, а не лише лайки.
+OPTIONAL_SCOPES = ["user-library-modify"]   # лайкнути трек / прибрати лайк
+AUTH_SCOPES = " ".join(SCOPES.split() + OPTIONAL_SCOPES)
+
 
 def token_has_scopes(token: dict | None) -> bool:
     """Чи дає збережений токен усі потрібні дозволи."""

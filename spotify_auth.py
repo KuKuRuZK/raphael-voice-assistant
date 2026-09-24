@@ -51,7 +51,7 @@ try:
         client_id=CLIENT_ID,
         client_secret=CLIENT_SECRET,
         redirect_uri=spotify_common.REDIRECT_URI,
-        scope=spotify_common.SCOPES,
+        scope=spotify_common.AUTH_SCOPES,
         cache_path=spotify_common.TOKEN_PATH,
         open_browser=True,
     ))

@@ -225,6 +225,12 @@ def execute_action(action_str: str):
             n = int(p) if p.isdigit() else 5
             music._spotify_liked(n)
 
+        elif t == "spotify_like":
+            music._spotify_save_current(True)
+
+        elif t == "spotify_unlike":
+            music._spotify_save_current(False)
+
         elif t == "spotify_volume_up":
             step = int(p) if p.isdigit() else 10
             music._spotify_volume("up", step)
