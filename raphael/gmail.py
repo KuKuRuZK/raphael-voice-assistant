@@ -2,9 +2,12 @@
 Gmail: кілька скриньок, сортування mail_triage, читання, пошук, чернетки
 і перевірка нових листів для монітора. Тут же спільні OAuth-креденшели Google.
 """
+import functools
 import itertools
 import logging
 import os
+import threading
+from datetime import datetime
 
 from raphael import llm
 from raphael import mail_triage
@@ -20,67 +23,129 @@ _seen_gmail_ids: dict = {}   # вже оголошені листи; dict, а н
 # ============================================================
 #  GMAIL
 # ============================================================
-_gmail_service_cache = None
-
 _google_creds_cache = None
+
+# httplib2 під googleapiclient не потокобезпечний, а поштою одночасно
+# користуються монітор, дайджест і голосові команди. Два потоки на одному
+# зʼєднанні зрідка давали SSL-помилки, тож запити до Google йдуть по одному.
+_api_lock = threading.RLock()
+
+
+def _one_at_a_time(fn):
+    @functools.wraps(fn)
+    def wrapper(*args, **kwargs):
+        with _api_lock:
+            return fn(*args, **kwargs)
+    return wrapper
+
+
+# ── Відвалена авторизація ────────────────────────────────────────────────────
+# Поки OAuth-застосунок Google у режимі Testing, refresh-токен живе 7 днів, і
+# потім пошта з календарем мовчки переставали працювати: помилка була лише в
+# лозі. Тепер скринька з мертвим токеном потрапляє в _auth_dead. Монітор раз на
+# день каже про це голосом, а на пряме питання («що по пошті») Рафаель
+# відповідає справжньою причиною замість «скринька чиста». Закешований сервіс
+# при цьому скидається, тож після gmail_auth.bat новий токен підхопиться з
+# диска на наступній перевірці, без перезапуску.
+_auth_dead: dict = {}   # token_path → причина
+_auth_warned_on = ""    # дата, коли про це вже сказали голосом
+
+
+def _is_auth_error(e) -> bool:
+    s = str(e).lower()
+    return (type(e).__name__ == "RefreshError" or "invalid_grant" in s
+            or "unauthorized_client" in s or "token has been expired or revoked" in s)
+
+
+def _auth_problem(token_path: str, reason) -> None:
+    """Токен більше не дійсний: забути закешовані сервіси й запамʼятати скриньку."""
+    global _google_creds_cache
+    _gmail_multi_cache.pop(token_path, None)
+    if token_path == cfg.GMAIL_TOKEN_PATH:
+        _google_creds_cache = None
+    if token_path not in _auth_dead:      # у лог один раз, а не на кожній перевірці
+        log.error(f"Google: доступ за {os.path.basename(token_path)} більше не дійсний: {reason}")
+    _auth_dead[token_path] = str(reason)
+
+
+def _auth_ok(token_path: str) -> None:
+    if _auth_dead.pop(token_path, None) is not None:
+        log.info(f"Google: доступ за {os.path.basename(token_path)} відновлено")
+
+
+def auth_warning(daily: bool = False) -> str:
+    """
+    Що сказати про скриньки без доступу ("" якщо таких немає).
+    daily=True для монітора: не частіше разу на день і не того дня, коли
+    про це вже сказали у відповідь на питання.
+    """
+    global _auth_warned_on
+    today = datetime.now().strftime("%Y-%m-%d")
+    if not _auth_dead or (daily and _auth_warned_on == today):
+        return ""
+    _auth_warned_on = today
+    tokens = [a["token"] for a in cfg.GMAIL_ACCOUNTS]
+    out = []
+    for token_path in list(_auth_dead):   # календар дописує з іншого потоку
+        if token_path in tokens:
+            idx = tokens.index(token_path)
+            label = cfg.GMAIL_ACCOUNTS[idx]["label"]
+        else:
+            idx, label = 0, "основна"
+        what = f"пошти «{label}»" + (" і календаря" if token_path == cfg.GMAIL_TOKEN_PATH else "")
+        arg = f" {idx + 1}" if idx else ""
+        out.append(f"Немає доступу до {what}: треба знову увійти в Google. Запусти gmail_auth.bat{arg}.")
+    return " ".join(out)
 
 
 def _get_google_creds():
-    """Спільні OAuth2 креденшели для Gmail і Calendar (один токен, з кешу)."""
+    """
+    Спільні OAuth2 креденшели для Gmail і Calendar (один токен, з кешу).
+
+    Ніколи не відкриває вхід у браузері: раніше без дійсного токена фоновий
+    потік сам запускав run_local_server і чекав, поки хтось увійде. Тепер
+    Рафаель просить запустити gmail_auth.bat.
+    """
     global _google_creds_cache
     if _google_creds_cache is not None:
         return _google_creds_cache
     if not os.path.exists(cfg.GMAIL_CREDENTIALS_PATH):
         return None
-    try:
-        from google.oauth2.credentials import Credentials
-        from google_auth_oauthlib.flow import InstalledAppFlow
-        from google.auth.transport.requests import Request
+    with _api_lock:   # оновлення токена пише файл, і робити це має один потік
+        if _google_creds_cache is not None:
+            return _google_creds_cache
+        try:
+            from google.oauth2.credentials import Credentials
+            from google.auth.transport.requests import Request
 
-        creds = None
-        if os.path.exists(cfg.GMAIL_TOKEN_PATH):
-            creds = Credentials.from_authorized_user_file(cfg.GMAIL_TOKEN_PATH, cfg.GMAIL_SCOPES)
+            creds = None
+            if os.path.exists(cfg.GMAIL_TOKEN_PATH):
+                creds = Credentials.from_authorized_user_file(cfg.GMAIL_TOKEN_PATH, cfg.GMAIL_SCOPES)
 
-        if not creds or not creds.valid:
-            if creds and creds.expired and creds.refresh_token:
+            if not creds or not creds.valid:
+                if not (creds and creds.expired and creds.refresh_token):
+                    _auth_problem(cfg.GMAIL_TOKEN_PATH, "немає дійсного токена")
+                    return None
                 creds.refresh(Request())
+                with open(cfg.GMAIL_TOKEN_PATH, "w", encoding="utf-8") as f:
+                    f.write(creds.to_json())
+
+            _google_creds_cache = creds
+            _auth_ok(cfg.GMAIL_TOKEN_PATH)
+            return creds
+        except Exception as e:
+            if _is_auth_error(e):
+                _auth_problem(cfg.GMAIL_TOKEN_PATH, e)
             else:
-                flow = InstalledAppFlow.from_client_secrets_file(
-                    cfg.GMAIL_CREDENTIALS_PATH, cfg.GMAIL_SCOPES
-                )
-                creds = flow.run_local_server(port=0)
-            with open(cfg.GMAIL_TOKEN_PATH, "w", encoding="utf-8") as f:
-                f.write(creds.to_json())
-
-        _google_creds_cache = creds
-        return creds
-    except Exception as e:
-        log.error(f"Google creds init: {e}")
-        return None
-
-
-def _get_gmail():
-    """Повертає ініціалізований Gmail сервіс (OAuth2, з кешу)."""
-    global _gmail_service_cache
-    if _gmail_service_cache is not None:
-        return _gmail_service_cache
-    creds = _get_google_creds()
-    if not creds:
-        return None
-    try:
-        from googleapiclient.discovery import build
-        _gmail_service_cache = build("gmail", "v1", credentials=creds)
-        log.info("Gmail сервіс ініціалізовано")
-        return _gmail_service_cache
-    except Exception as e:
-        log.error(f"Gmail init: {e}")
-        return None
+                log.error(f"Google creds init: {e}")
+            return None
 
 
 # ── Мульти-акаунт пошта ───────────────────────────────────────────────────────
 _gmail_multi_cache: dict = {}   # token_path → service
 
 
+@_one_at_a_time
 def _get_gmail_service(token_path: str):
     """Будує Gmail сервіс для конкретного токена (без інтерактивного входу)."""
     if token_path in _gmail_multi_cache:
@@ -98,9 +163,13 @@ def _get_gmail_service(token_path: str):
                 f.write(creds.to_json())
         svc = build("gmail", "v1", credentials=creds)
         _gmail_multi_cache[token_path] = svc
+        _auth_ok(token_path)
         return svc
     except Exception as e:
-        log.error(f"Gmail service {os.path.basename(token_path)}: {e}")
+        if _is_auth_error(e):
+            _auth_problem(token_path, e)
+        else:
+            log.error(f"Gmail service {os.path.basename(token_path)}: {e}")
         return None
 
 
@@ -120,6 +189,24 @@ def _gmail_box(label: str) -> str:
         if acc["label"] == label:
             return acc.get("box", "основна")
     return "основна"
+
+
+def _account_error(label: str, what: str, e) -> None:
+    """Помилка однієї скриньки: мертвий токен відмічаємо, решту пишемо в лог."""
+    if _is_auth_error(e):
+        _auth_problem(next((a["token"] for a in cfg.GMAIL_ACCOUNTS if a["label"] == label),
+                           cfg.GMAIL_TOKEN_PATH), e)
+    else:
+        log.error(f"Gmail {what} [{label}]: {e}")
+
+
+def _mail_tail(failed: list, multi: bool) -> str:
+    """Що додати до відповіді, якщо якісь скриньки не вдалося перевірити."""
+    warning = auth_warning()
+    if warning or not failed:
+        return warning
+    what = "скриньку " + ", ".join(f"«{label}»" for label in failed) if multi else "пошту"
+    return f"Не вдалося перевірити {what}."
 
 
 _triage_label_cache: dict = {}   # token_path -> {категорія: labelId}
@@ -157,6 +244,7 @@ def _gmail_triage(svc, token_path: str, msg_id: str, sender: str, subject: str, 
         return None
 
 
+@_one_at_a_time
 def _gmail_find(query: str):
     """Знаходить перший лист за запитом серед усіх скриньок. → (label, svc, msg_id) або None."""
     q = query.strip() or "is:unread"
@@ -167,7 +255,7 @@ def _gmail_find(query: str):
             if msgs:
                 return label, svc, msgs[0]["id"]
         except Exception as e:
-            log.debug(f"Gmail find ({label}): {e}")
+            _account_error(label, "find", e)
     return None
 
 
@@ -182,14 +270,15 @@ def _gmail_headers(msg: dict) -> dict:
     return {h["name"]: h["value"] for h in msg.get("payload", {}).get("headers", [])}
 
 
-def _gmail_unread(limit: int = 5) -> None:
-    """Читає непрочитані листи з усіх скриньок — скільки і від кого."""
+@_one_at_a_time
+def _gmail_unread_text(limit: int = 5) -> str:
+    """Непрочитані листи з усіх скриньок текстом: скільки і від кого."""
     accounts = _gmail_accounts()
     if not accounts:
-        tts.speak("Gmail не налаштований. Потрібен файл gmail_credentials.json в папці асистента.")
-        return
+        return auth_warning() or "Gmail не налаштований. Потрібен файл gmail_credentials.json в папці асистента."
     multi = len(accounts) > 1
     parts = []
+    failed = []
     grand_total = 0
     for label, svc in accounts:
         try:
@@ -215,24 +304,38 @@ def _gmail_unread(limit: int = 5) -> None:
                 parts.append(f"У тебе {vr.count(total, 'непрочитаний лист', 'непрочитані листи', 'непрочитаних листів')}, від {uniq}")
             log.info(f"Gmail unread [{label}]: {total}")
         except Exception as e:
-            log.error(f"Gmail unread [{label}]: {e}")
+            _account_error(label, "unread", e)
+            failed.append(label)
 
+    # «Скринька чиста» лише тоді, коли її справді перевірили: раніше без
+    # мережі чи з мертвим токеном Рафаель бадьоро казав, що листів немає
     parts = [p for p in parts if p]
-    if grand_total == 0:
-        tts.speak("Непрочитаних листів немає. Усі скриньки чисті." if multi else
-              "Непрочитаних листів немає. Поштова скринька чиста.")
-        return
-    tts.speak(("Пошта. " if multi else "") + ". ".join(parts) + ".")
+    if grand_total:
+        text = ("Пошта. " if multi else "") + ". ".join(parts) + "."
+    elif len(failed) < len(accounts):
+        text = "Непрочитаних листів немає."
+        if not failed and not _auth_dead:
+            text += " Усі скриньки чисті." if multi else " Поштова скринька чиста."
+    else:
+        text = ""
+    return f"{text} {_mail_tail(failed, multi)}".strip()
 
 
+def _gmail_unread(limit: int = 5) -> None:
+    """Читає непрочитані листи з усіх скриньок — скільки і від кого."""
+    tts.speak(_gmail_unread_text(limit))
+
+
+@_one_at_a_time
 def _gmail_latest(limit: int = 3) -> None:
     """Читає останні листи з усіх скриньок."""
     accounts = _gmail_accounts()
     if not accounts:
-        tts.speak("Gmail не налаштований.")
+        tts.speak(auth_warning() or "Gmail не налаштований.")
         return
     multi = len(accounts) > 1
     parts = []
+    failed = []
     for label, svc in accounts:
         try:
             res = svc.users().messages().list(
@@ -254,21 +357,25 @@ def _gmail_latest(limit: int = 3) -> None:
             prefix = f"{label} — " if multi else ""
             parts.append(prefix + "; ".join(lines))
         except Exception as e:
-            log.error(f"Gmail latest [{label}]: {e}")
+            _account_error(label, "latest", e)
+            failed.append(label)
+    tail = _mail_tail(failed, multi)
     if not parts:
-        tts.speak("Листів немає.")
+        tts.speak(tail or "Листів немає.")
         return
-    tts.speak("Останні листи: " + ". ".join(parts) + ".")
+    tts.speak(f"Останні листи: {'. '.join(parts)}. {tail}".strip())
 
 
+@_one_at_a_time
 def _gmail_search(query: str, limit: int = 3) -> None:
     """Шукає листи за запитом серед усіх скриньок (синтаксис Gmail: from:, subject:)."""
     accounts = _gmail_accounts()
     if not accounts:
-        tts.speak("Gmail не налаштований.")
+        tts.speak(auth_warning() or "Gmail не налаштований.")
         return
     multi = len(accounts) > 1
     parts = []
+    failed = []
     found = 0
     for label, svc in accounts:
         try:
@@ -290,11 +397,14 @@ def _gmail_search(query: str, limit: int = 3) -> None:
             prefix = f"{label} — " if multi else ""
             parts.append(prefix + "; ".join(lines))
         except Exception as e:
-            log.error(f"Gmail search [{label}]: {e}")
+            _account_error(label, "search", e)
+            failed.append(label)
+    tail = _mail_tail(failed, multi)
     if not found:
-        tts.speak(f"По запиту «{query}» листів не знайдено.")
+        tts.speak(f"По запиту «{query}» листів не знайдено. {tail}".strip())
         return
-    tts.speak(f"Знайшла {vr.count(found, 'лист', 'листи', 'листів')} по «{query}»: " + ". ".join(parts) + ".")
+    tts.speak(f"Знайшла {vr.count(found, 'лист', 'листи', 'листів')} по «{query}»: "
+              f"{'. '.join(parts)}. {tail}".strip())
 
 
 # ============================================================
@@ -337,15 +447,16 @@ def _gmail_extract_body(msg: dict) -> str:
 def _gmail_read_full(query: str = "") -> None:
     """Читає вголос повний текст листа (останнього непрочитаного або за запитом, з усіх скриньок)."""
     if not _gmail_accounts():
-        tts.speak("Gmail не налаштований.")
+        tts.speak(auth_warning() or "Gmail не налаштований.")
         return
     found = _gmail_find(query)
     if not found:
-        tts.speak("Такого листа не знайшла.")
+        tts.speak(f"Такого листа не знайшла. {auth_warning()}".strip())
         return
     label, svc, msg_id = found
     try:
-        full = svc.users().messages().get(userId="me", id=msg_id, format="full").execute()
+        with _api_lock:   # не на весь лист: читання вголос триває хвилину
+            full = svc.users().messages().get(userId="me", id=msg_id, format="full").execute()
         h = _gmail_headers(full)
         sender  = _gmail_parse_sender(h.get("From", "невідомо"))
         subject = h.get("Subject", "без теми")
@@ -381,17 +492,18 @@ def _gmail_read_full(query: str = "") -> None:
         tts.speak("Не вдалося прочитати лист.")
 
 
+@_one_at_a_time
 def _gmail_draft_reply(query: str, reply_text: str) -> None:
     """Створює ЧЕРНЕТКУ відповіді на лист (не відправляє — для безпеки)."""
     if not _gmail_accounts():
-        tts.speak("Gmail не налаштований.")
+        tts.speak(auth_warning() or "Gmail не налаштований.")
         return
     if not reply_text.strip():
         tts.speak("Що саме відповісти?")
         return
     found = _gmail_find(query)
     if not found:
-        tts.speak("Не знайшла на що відповідати.")
+        tts.speak(f"Не знайшла на що відповідати. {auth_warning()}".strip())
         return
     label, svc, msg_id = found
     try:
@@ -436,6 +548,7 @@ def _gmail_draft_reply(query: str, reply_text: str) -> None:
 #  МОНІТОРИНГ — ПРОАКТИВНІ СПОВІЩЕННЯ
 # ============================================================
 
+@_one_at_a_time
 def _gmail_check_new() -> list:
     """Повертає НОВІ непрочитані листи (label, sender, subject) з усіх скриньок."""
     accounts = _gmail_accounts()
@@ -499,7 +612,7 @@ def _gmail_check_new() -> list:
                     new_items.append((m["id"], sender, subject))
                 ok_accounts.add(label)
             except Exception as e:
-                log.error(f"Gmail monitor [{label}]: {e}")
+                _account_error(label, "monitor", e)
         # Забуваємо лише листи, яких уже немає в непрочитаних вхідних (прочитані,
         # заархівовані). Раніше при переповненні викидались НАЙСТАРІШІ ключі,
         # тобто якраз важливі непрочитані, і їх оголошувало вдруге як нові.

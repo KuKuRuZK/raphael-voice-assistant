@@ -106,7 +106,7 @@ def _transcribe_whisper(audio) -> str:
             log.debug(f"Whisper галюцинація/шум — ігнорую: '{text}'")
             return ""
         if text:
-            log.info(f"Whisper STT: '{text}'")
+            log.debug(f"Whisper STT: '{text}'")
         return text
     except Exception as e:
         log.warning(f"Whisper STT failed, fallback to Google: {e}")
@@ -120,7 +120,7 @@ def _transcribe_google(audio) -> str:
         if _is_noise(text):
             log.debug(f"Google шум — ігнорую: '{text}'")
             return ""
-        log.info(f"Google STT (fallback): '{text}'")
+        log.debug(f"Google STT (fallback): '{text}'")
         return text
     except sr.UnknownValueError:
         return ""
@@ -191,7 +191,7 @@ def _transcribe_vosk(audio) -> str:
         if _is_noise(text):
             return ""
         if text:
-            log.info(f"Vosk STT (офлайн): '{text}'")
+            log.debug(f"Vosk STT (офлайн): '{text}'")
         return text
     except Exception as e:
         log.warning(f"Vosk STT failed: {e}")
@@ -208,7 +208,13 @@ _mic_calibrated = False   # калібруємо мікрофон лише ра�
 
 
 def _transcribe(audio) -> str:
-    """Whisper (найкраще) → Google → Vosk (офлайн, коли немає інтернету)."""
+    """
+    Whisper (найкраще) → Google → Vosk (офлайн, коли немає інтернету).
+
+    Розпізнаний текст пишеться в лог лише як DEBUG, тобто в lin.log не
+    потрапляє: у звичайному режимі сюди приходить усе, що сказали поруч.
+    Звернене до Рафаеля логують assistant і confirm («Команда: ...»).
+    """
     return (_transcribe_whisper(audio)
             or _transcribe_google(audio)
             or _transcribe_vosk(audio))

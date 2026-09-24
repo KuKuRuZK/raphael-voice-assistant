@@ -1,8 +1,8 @@
 """
 Стан системи: ресурси, журнал Windows, сповіщення з кулдауном, звіт на вимогу.
 """
-import json
 import logging
+import re
 import subprocess
 import time
 from datetime import datetime, timedelta
@@ -69,6 +69,34 @@ def _sys_alert(category: str, message: str) -> None:
     tts.speak(message)
 
 
+# Процеси, що «займають» процесор лише формально: на Windows psutil показує
+# в System Idle Process час простою
+_IDLE_PROCS = {"system idle process", "idle"}
+
+
+def _prime_process_cpu():
+    """
+    Перший замір cpu_percent для кожного процесу завжди 0%: psutil міряє
+    різницю від попереднього виклику. Без цього «прогріву» за хвилину до
+    сповіщення Рафаель називав винуватцем просто перший процес у списку.
+    """
+    for p in psutil.process_iter(["cpu_percent"]):
+        pass
+
+
+def _top_cpu_process() -> str | None:
+    """Назва процесу, що найбільше вантажив процесор від попереднього заміру."""
+    best, best_cpu = None, 0.0
+    for p in psutil.process_iter(["name", "cpu_percent"]):
+        name = p.info.get("name") or ""
+        cpu = p.info.get("cpu_percent") or 0.0
+        if name.lower() in _IDLE_PROCS or p.pid == 0:
+            continue
+        if cpu > best_cpu:
+            best, best_cpu = name, cpu
+    return best
+
+
 def _check_resources() -> None:
     """Перевіряє CPU, RAM, диск, батарею, температуру і сповіщає при проблемах."""
     global _cpu_high_streak
@@ -78,11 +106,11 @@ def _check_resources() -> None:
         cpu = psutil.cpu_percent(interval=0.5)
         if cpu >= cfg.SYS_THRESHOLDS["cpu"]:
             _cpu_high_streak += 1
+            if _cpu_high_streak == 1:
+                _prime_process_cpu()
             if _cpu_high_streak >= cfg.SYS_CPU_STREAK:
-                # знаходимо процес-винуватця
-                top = max(psutil.process_iter(['name', 'cpu_percent']),
-                          key=lambda p: p.info.get('cpu_percent') or 0, default=None)
-                who = f" Найбільше вантажить {top.info['name']}." if top and top.info.get('name') else ""
+                top = _top_cpu_process()
+                who = f" Найбільше вантажить {top}." if top else ""
                 _sys_alert("cpu", f"Увага: процесор завантажений на {cpu:.0f} відсотків вже довго.{who}")
         else:
             _cpu_high_streak = 0
@@ -126,56 +154,64 @@ def _check_resources() -> None:
         log.debug(f"Temp check: {e}")
 
 
+# Журнал читає wevtutil: крихітна вбудована утиліта стартує за десятки
+# мілісекунд. PowerShell для того самого запиту стартував 1-3 секунди і на
+# цей час забирав ядро процесора, до того ж кожні 5 хвилин.
+_LEVEL_NAMES = {1: "critical", 2: "error"}
+
+
+def _query_system_log(ms: int, count: int) -> str:
+    """XML критичних подій і помилок журналу System за останні ms мілісекунд."""
+    query = f"*[System[(Level=1 or Level=2) and TimeCreated[timediff(@SystemTime) <= {ms}]]]"
+    raw = subprocess.run(
+        ["wevtutil", "qe", "System", f"/q:{query}", "/f:xml", f"/c:{count}", "/rd:true"],
+        capture_output=True, timeout=10,
+    ).stdout or b""
+    # Кодування виводу залежить від версії Windows: ловимо і UTF-16, і 8-бітне
+    return raw.decode("utf-16-le" if b"\x00" in raw else "utf-8", errors="ignore")
+
+
+def _parse_events(xml: str) -> list:
+    """Події з виводу wevtutil /f:xml → [(provider, level, event_id)]."""
+    events = []
+    for ev in re.findall(r"<Event\b.*?</Event>", xml, re.S):
+        provider = re.search(r"<Provider\s[^>]*?Name=['\"]([^'\"]*)", ev)
+        level = re.search(r"<Level>(\d+)</Level>", ev)
+        event_id = re.search(r"<EventID[^>]*>(\d+)</EventID>", ev)
+        events.append((provider.group(1) if provider else "",
+                       int(level.group(1)) if level else 2,
+                       event_id.group(1) if event_id else ""))
+    return events
+
+
 def _get_event_log_errors():
     """
     Читає журнал подій Windows (System) за час від останньої перевірки.
-    Повертає список (provider, level, message) критичних/важливих помилок.
+    Повертає список (provider, level, опис) критичних/важливих помилок.
     """
     global _last_event_check
     now = datetime.now()
     since = _last_event_check or (now - timedelta(minutes=5))
     _last_event_check = now
+    ms = int((now - since).total_seconds() * 1000) + 60_000   # з хвилиною запасу
 
-    minutes = max(1, int((now - since).total_seconds() / 60) + 1)
-    # Level 1 = Critical, 2 = Error
-    ps = (
-        "$ErrorActionPreference='SilentlyContinue';"
-        f"Get-WinEvent -FilterHashtable @{{LogName='System'; Level=1,2; "
-        f"StartTime=(Get-Date).AddMinutes(-{minutes})}} -MaxEvents 25 | "
-        "Select-Object ProviderName, LevelDisplayName, Id, "
-        "@{N='Msg';E={$_.Message.Substring(0,[Math]::Min(150,$_.Message.Length))}} | "
-        "ConvertTo-Json -Compress"
-    )
     try:
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, timeout=20,
-            encoding="utf-8", errors="ignore",
-        )
-        out = (result.stdout or "").strip()
-        if not out:
-            return []
-        data = json.loads(out)
-        if isinstance(data, dict):
-            data = [data]
-        events = []
-        for ev in data:
-            provider = (ev.get("ProviderName") or "").strip()
-            level    = (ev.get("LevelDisplayName") or "").strip()
-            msg      = (ev.get("Msg") or "").strip().replace("\n", " ").replace("\r", " ")
-            plow = provider.lower()
-            # Критичні — завжди; помилки — лише з важливих джерел
-            is_critical = level.lower() in ("critical", "критичний")
-            is_important_source = any(s in plow for s in cfg.SYS_EVENT_SOURCES)
-            if is_critical or is_important_source:
-                events.append((provider, level, msg))
-        return events
+        found = _parse_events(_query_system_log(ms, 25))
     except subprocess.TimeoutExpired:
         log.debug("Event log check timeout")
         return []
     except Exception as e:
         log.debug(f"Event log check: {e}")
         return []
+
+    events = []
+    for provider, level, event_id in found:
+        # Критичні завжди; помилки лише з важливих джерел. Рівень числом, а не
+        # назвою: назву Windows перекладає мовою системи, і «Критический»
+        # раніше не збігався ні з «critical», ні з «критичний».
+        if level == 1 or any(src in provider.lower() for src in cfg.SYS_EVENT_SOURCES):
+            events.append((provider, _LEVEL_NAMES.get(level, "error"), f"ID {event_id}"))
+    return events
 
 
 def _describe_event(provider: str, msg: str) -> str:
@@ -245,19 +281,12 @@ def _system_health_report() -> str:
 
     # Останні помилки за 30 хв (без зміни baseline моніторингу)
     try:
-        ps = (
-            "$ErrorActionPreference='SilentlyContinue';"
-            "Get-WinEvent -FilterHashtable @{LogName='System'; Level=1,2; "
-            "StartTime=(Get-Date).AddMinutes(-30)} -MaxEvents 5 | "
-            "Measure-Object | Select-Object -ExpandProperty Count"
-        )
-        result = subprocess.run(
-            ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
-            capture_output=True, text=True, timeout=15, encoding="utf-8", errors="ignore",
-        )
-        cnt = (result.stdout or "0").strip()
-        if cnt.isdigit() and int(cnt) > 0:
-            status += f". За останні пів години в журналі {vr.count(int(cnt), 'помилка', 'помилки', 'помилок')}"
+        cap = 20
+        cnt = len(_parse_events(_query_system_log(30 * 60 * 1000, cap)))
+        if cnt:
+            at_least = "щонайменше " if cnt >= cap else ""
+            status += (f". За останні пів години в журналі "
+                       f"{at_least}{vr.count(cnt, 'помилка', 'помилки', 'помилок')}")
         else:
             status += ". Помилок у журналі немає"
     except Exception as e:

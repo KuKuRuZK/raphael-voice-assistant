@@ -13,19 +13,25 @@ log = logging.getLogger("Лін")
 
 
 _calendar_service_cache = None
+_calendar_creds = None   # з якими креденшелами зібрано сервіс
 
 
 def _get_calendar():
-    """Повертає ініціалізований Google Calendar сервіс (з кешу)."""
-    global _calendar_service_cache
-    if _calendar_service_cache is not None:
-        return _calendar_service_cache
+    """
+    Повертає Google Calendar сервіс (з кешу). Коли gmail скинув мертвий токен
+    і підхопив новий після gmail_auth.bat, креденшели інші, і сервіс
+    збирається наново, без перезапуску.
+    """
+    global _calendar_service_cache, _calendar_creds
     creds = gmail._get_google_creds()
     if not creds:
         return None
+    if _calendar_service_cache is not None and creds is _calendar_creds:
+        return _calendar_service_cache
     try:
         from googleapiclient.discovery import build
         _calendar_service_cache = build("calendar", "v3", credentials=creds)
+        _calendar_creds = creds
         log.info("Calendar сервіс ініціалізовано")
         return _calendar_service_cache
     except Exception as e:
@@ -33,12 +39,16 @@ def _get_calendar():
         return None
 
 
-def _calendar_agenda(which: str = "today") -> None:
-    """Озвучує події: today / tomorrow / week."""
+def _unavailable() -> str:
+    """Чому календаря немає: відвалився доступ Google чи його не налаштовано."""
+    return gmail.auth_warning() or "Календар не налаштований."
+
+
+def _calendar_agenda_text(which: str = "today") -> str:
+    """Події текстом: today / tomorrow / week (для озвучки і дайджесту)."""
     svc = _get_calendar()
     if not svc:
-        tts.speak("Календар не налаштований.")
-        return
+        return _unavailable()
     try:
         now = datetime.now()
         if which == "tomorrow":
@@ -62,8 +72,7 @@ def _calendar_agenda(which: str = "today") -> None:
         ).execute()
         items = res.get("items", [])
         if not items:
-            tts.speak(f"{label} подій немає.")
-            return
+            return f"{label} подій немає."
         lines = []
         for ev in items[:6]:
             summary = ev.get("summary", "без назви")
@@ -76,18 +85,26 @@ def _calendar_agenda(which: str = "today") -> None:
                 except Exception:
                     pass
             lines.append(f"{tstr}{summary}")
-        tts.speak(f"{label} у тебе {vr.count(len(items), 'подія', 'події', 'подій')}: " + "; ".join(lines) + ".")
         log.info(f"Calendar {which}: {len(items)} подій")
+        return f"{label} у тебе {vr.count(len(items), 'подія', 'події', 'подій')}: " + "; ".join(lines) + "."
     except Exception as e:
+        if gmail._is_auth_error(e):
+            gmail._auth_problem(cfg.GMAIL_TOKEN_PATH, e)
+            return _unavailable()
         log.error(f"Calendar agenda: {e}")
-        tts.speak("Не вдалося прочитати календар.")
+        return "Не вдалося прочитати календар."
+
+
+def _calendar_agenda(which: str = "today") -> None:
+    """Озвучує події: today / tomorrow / week."""
+    tts.speak(_calendar_agenda_text(which))
 
 
 def _calendar_create(summary: str, start_str: str, minutes: int = 60) -> None:
     """Створює подію. start_str у форматі 'YYYY-MM-DD HH:MM'."""
     svc = _get_calendar()
     if not svc:
-        tts.speak("Календар не налаштований.")
+        tts.speak(_unavailable())
         return
     try:
         start_dt = datetime.strptime(start_str.strip(), "%Y-%m-%d %H:%M")
@@ -104,5 +121,9 @@ def _calendar_create(summary: str, start_str: str, minutes: int = 60) -> None:
     except ValueError:
         tts.speak("Не зрозуміла дату чи час події.")
     except Exception as e:
+        if gmail._is_auth_error(e):
+            gmail._auth_problem(cfg.GMAIL_TOKEN_PATH, e)
+            tts.speak("Подію не створила. " + _unavailable())
+            return
         log.error(f"Calendar create: {e}")
         tts.speak("Не вдалося створити подію.")

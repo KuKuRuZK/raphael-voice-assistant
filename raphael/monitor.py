@@ -37,8 +37,8 @@ def _monitor_toggle(target: str, on: bool) -> None:
             continue
         if on:
             # Перевіряємо що сервіс взагалі налаштований
-            if tg == "gmail" and not gmail._get_gmail():
-                tts.speak("Спершу налаштуй Gmail — потрібен файл credentials.")
+            if tg == "gmail" and not gmail._gmail_accounts():
+                tts.speak(gmail.auth_warning() or "Спершу налаштуй Gmail, потрібен файл credentials.")
                 continue
             if tg == "slack" and not slack_chat._get_slack():
                 tts.speak("Спершу налаштуй Slack — потрібен токен у конфігу.")
@@ -73,6 +73,9 @@ def monitor_loop():
             # ── Gmail ──
             if _MONITOR["gmail"]:
                 new_mail = gmail._gmail_check_new()
+                warning = gmail.auth_warning(daily=True)
+                if warning:
+                    tts.speak(warning)
                 first_pass = not _monitor_primed["gmail"]
                 _monitor_primed["gmail"] = True
                 if first_pass and not (cfg.MAIL_TRIAGE_ENABLED and mail_triage):

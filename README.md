@@ -92,6 +92,11 @@ python lin.py
 Settings live in `config.json` (models, hotkeys, thresholds). Keys never go
 there: that file is tracked, `secrets.json` is not.
 
+While the Google OAuth app is in Testing mode, its tokens expire after 7 days.
+Raphael then says which mailbox lost access (once a day, or whenever you ask
+about mail or the calendar). Run `gmail_auth.bat` again (`gmail_auth.bat 2` for
+the second mailbox) and the new token is picked up without a restart.
+
 Tests run on any OS: the pure logic (mail rules, wake word, reminders, command
 matching) directly, and the whole assistant on stubs of the Windows-only
 libraries (`tests/stubs.py`): confirmations, model fallback, the microphone
