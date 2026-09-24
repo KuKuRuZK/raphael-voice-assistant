@@ -1,4 +1,5 @@
-# Рафаель: залежності. Windows, Python 3.10+.
+# Рафаель: залежності. Windows, Python 3.10-3.12 (саме їх перевіряє CI).
+# 3.13+ CI не перевіряє: там прибрали aifc і audioop, на які спирається SpeechRecognition.
 # Встановлення: pip install -r requirements.txt (або setup.bat)
 
 # Голос: мікрофон, розпізнавання, озвучка
