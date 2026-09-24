@@ -178,6 +178,19 @@ NOTES_PATH  = os.path.join(SCRIPT_DIR, "notes.json")    # нотатки й на
 MEMORY_PATH = os.path.join(SCRIPT_DIR, "memory.json")   # памʼять між сесіями
 USAGE_PATH  = os.path.join(SCRIPT_DIR, "usage.json")    # лічильник денних лімітів
 
+# ── Офлайн ────────────────────────────────────────────────────────────────────
+# Без інтернету Рафаель може й далі відповідати голосом, якщо є локальні
+# модель і голос. Обидва необовʼязкові: чого немає, того просто не пробуємо.
+# OFFLINE_MODEL: модель Ollama, яку питати, коли не відповіли ні основна, ні
+#   резервна. Напр. "local:gemma3:4b" (спершу ollama pull gemma3:4b). "" = ні.
+# PIPER_EXE / PIPER_MODEL: офлайн-голос Piper, коли edge-tts недоступний.
+#   piper.exe з github.com/rhasspy/piper/releases, голос
+#   uk_UA-ukrainian_tts-medium.onnx разом з .onnx.json з
+#   huggingface.co/rhasspy/piper-voices. Поклади все в теку piper/ поруч з lin.py.
+OFFLINE_MODEL = ""
+PIPER_EXE   = os.path.join(_ROOT, "piper", "piper.exe")
+PIPER_MODEL = os.path.join(_ROOT, "piper", "uk_UA-ukrainian_tts-medium.onnx")
+
 # ── Денні ліміти безкоштовного рівня (для попереджень і «скільки лімітів») ──
 # Ключ «провайдер:модель». Значення з таблиць Groq і Gemini на момент запису;
 # свої дивись на console.groq.com/settings/limits і в Google AI Studio, а
@@ -240,6 +253,7 @@ def _load_config():
         "VISION_MODEL", "CALENDAR_TZ", "CALENDAR_REMIND_MINUTES",
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
         "FAST_MODEL", "WAKE_ENGINE", "BRAIN_VAULT",
+        "OFFLINE_MODEL", "PIPER_EXE", "PIPER_MODEL",
     ]
     applied = []
     for k in simple:

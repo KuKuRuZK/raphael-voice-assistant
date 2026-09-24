@@ -9,6 +9,7 @@ import logging
 import os
 import queue
 import re
+import subprocess
 import tempfile
 import threading
 import time
@@ -143,6 +144,33 @@ def _tts_synth_to(path: str, text: str):
         loop.close()
 
 
+# ── Офлайн-голос ──────────────────────────────────────────────────────────────
+# edge-tts це сервіс Microsoft: без інтернету Рафаель раніше просто мовчав.
+# Якщо поруч лежить Piper (settings: PIPER_EXE, PIPER_MODEL), фраза звучить
+# локальним голосом. Після збою edge-tts хвилину не пробуємо, інакше кожне
+# речення чекало б свій таймаут; фрази з кешу й далі звучать звичним голосом.
+EDGE_RETRY_AFTER = 60
+_edge_down_until = 0.0
+
+
+def _piper_ready() -> bool:
+    return bool(cfg.PIPER_EXE and cfg.PIPER_MODEL
+                and os.path.exists(cfg.PIPER_EXE) and os.path.exists(cfg.PIPER_MODEL))
+
+
+def _piper_audio(text: str) -> str:
+    """wav офлайн-голосом Piper. -m і -f розуміють і старий piper.exe, і новий."""
+    fd, tmp = tempfile.mkstemp(suffix=".wav")
+    os.close(fd)
+    try:
+        subprocess.run([cfg.PIPER_EXE, "-m", cfg.PIPER_MODEL, "-f", tmp],
+                       input=text.encode("utf-8"), capture_output=True, timeout=30, check=True)
+    except Exception:
+        os.unlink(tmp)
+        raise
+    return tmp
+
+
 def _tts_play(path: str):
     if not pygame.mixer.get_init():
         pygame.mixer.init()
@@ -159,7 +187,11 @@ def _tts_play(path: str):
 
 
 def _tts_audio(text: str) -> tuple:
-    """mp3 для фрази: з кешу або щойно синтезований. → (шлях, чи тимчасовий файл)."""
+    """
+    Аудіо для фрази: з кешу, щойно синтезоване edge-tts або, без інтернету,
+    офлайн-голосом Piper. → (шлях, чи тимчасовий файл)
+    """
+    global _edge_down_until
     cached = _tts_cache_path(text)
     if cached and os.path.exists(cached):
         try:
@@ -167,6 +199,21 @@ def _tts_audio(text: str) -> tuple:
         except Exception:
             pass
         return cached, False
+    if time.monotonic() < _edge_down_until and _piper_ready():
+        return _piper_audio(text), True
+    try:
+        return _tts_edge_audio(text, cached)
+    except Exception as e:
+        # NoAudioReceived: фраза без жодного слова (лише знаки), а не мережа
+        if type(e).__name__ == "NoAudioReceived" or not _piper_ready():
+            raise
+        _edge_down_until = time.monotonic() + EDGE_RETRY_AFTER
+        log.warning(f"edge-tts недоступний ({type(e).__name__}: {e}), говорю офлайн-голосом Piper")
+        return _piper_audio(text), True
+
+
+def _tts_edge_audio(text: str, cached) -> tuple:
+    """mp3 від edge-tts: у кеш, якщо фраза коротка, інакше тимчасовий файл."""
     if cached:
         os.makedirs(TTS_CACHE_DIR, exist_ok=True)
         part = cached + ".part"             # недописаний файл не потрапить у кеш

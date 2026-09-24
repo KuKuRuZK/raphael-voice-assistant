@@ -15,7 +15,7 @@ Personal project, built and used daily.
 |---|---|
 | **Voice** | wake word or hotkey, ~140 commands, free-form phrasing routed by an LLM |
 | **Speech in** | Whisper → Google → Vosk fallback chain, Vosk works fully offline |
-| **Speech out** | neural TTS (edge-tts), Ukrainian voice |
+| **Speech out** | neural TTS (edge-tts), Ukrainian voice; Piper as an offline voice if installed |
 | **Mail** | two Gmail accounts, 10-category triage, only what matters is spoken aloud |
 | **Calendar** | today / tomorrow / week, new events by voice, a spoken reminder 10 minutes before each event |
 | **Music** | full Spotify control |
@@ -103,6 +103,17 @@ While the Google OAuth app is in Testing mode, its tokens expire after 7 days.
 Raphael then says which mailbox lost access (once a day, or whenever you ask
 about mail or the calendar). Run `gmail_auth.bat` again (`gmail_auth.bat 2` for
 the second mailbox) and the new token is picked up without a restart.
+
+**Offline.** Speech recognition already falls back to Vosk. To keep answering
+without internet, set `OFFLINE_MODEL` in `config.json` to a local Ollama model
+(for example `"local:gemma3:4b"` after `ollama pull gemma3:4b`): it is asked
+after both cloud models fail. The system prompt is about 3K tokens, so give the
+model a context of at least 8K (a Modelfile with `PARAMETER num_ctx 8192`),
+otherwise Ollama cuts the beginning of the prompt. For an offline voice, put `piper.exe` from the
+[Piper releases](https://github.com/rhasspy/piper/releases) and the
+`uk_UA-ukrainian_tts-medium.onnx` voice (with its `.onnx.json`) into a `piper/`
+folder next to `lin.py`; it speaks whenever edge-tts cannot be reached. Both
+are optional and off until the files are there.
 
 Liking tracks by voice ("лайкни") needs one extra Spotify permission. Tokens
 made before it keep working for everything else; run `spotify_auth.bat` once

@@ -47,9 +47,10 @@ LLM_PROVIDERS = {
                "key_name": "GROQ_API_KEY"},
     "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
                "key_name": "GEMINI_API_KEY"},
-    # Місце під майбутню локальну модель. Ollama слухає 11434, LM Studio 1234.
+    # Локальна модель (OFFLINE_MODEL). Ollama слухає 11434, LM Studio 1234.
+    # Таймаут довший: на процесорі модель читає великий системний промт повільно.
     "local":  {"base_url": "http://127.0.0.1:11434/v1",
-               "key_name": "", "key_default": "ollama"},
+               "key_name": "", "key_default": "ollama", "timeout": 60},
 }
 _llm_clients = {}
 
@@ -72,8 +73,8 @@ def _llm(model: str):
         if pcfg.get("key_name") and not key:
             log.warning(f"{pcfg['key_name']} не задано (secrets.json або змінна середовища): "
                         f"запити до {prov} не пройдуть, працюватиме лише резерв")
-        cli = OpenAI(api_key=key or pcfg.get("key_default", "none"),
-                     base_url=pcfg["base_url"], timeout=LLM_TIMEOUT, max_retries=0)
+        cli = OpenAI(api_key=key or pcfg.get("key_default", "none"), base_url=pcfg["base_url"],
+                     timeout=pcfg.get("timeout", LLM_TIMEOUT), max_retries=0)
         _llm_clients[prov] = cli
         log.info(f"LLM-провайдер піднято: {prov}")
     return cli, bare
@@ -87,7 +88,10 @@ class LLMUnavailable(Exception):
 
     @property
     def rate_limited(self) -> bool:
-        return all(_is_rate_limit(e) for _, e in self.errors)
+        # Помилка локальної моделі (Ollama не запущена) не має ховати, що
+        # хмарні моделі вперлись у ліміт
+        online = [e for m, e in self.errors if not m.startswith("local:")]
+        return bool(online) and all(_is_rate_limit(e) for e in online)
 
 
 def _is_rate_limit(e) -> bool:
@@ -98,6 +102,32 @@ def _is_rate_limit(e) -> bool:
 def _fallback_for(model: str) -> str:
     """Резерв за замовчуванням: інша модель пари основна/резервна."""
     return cfg.GROQ_FALLBACK_MODEL if model == cfg.GROQ_PRIMARY_MODEL else cfg.GROQ_PRIMARY_MODEL
+
+
+def _candidates(model: str, fallback) -> list:
+    """
+    Кого питати по черзі: модель, резерв на іншому провайдері і, якщо вона
+    налаштована, локальна OFFLINE_MODEL, яка відповідає й без інтернету.
+    fallback: None → інша модель пари основна/резервна; False → лише сама
+    модель (зір: локальна модель зображень не бачить).
+    """
+    if fallback is not None and not fallback:
+        return [model]
+    out = [model]
+    for m in (_fallback_for(model) if fallback is None else fallback, cfg.OFFLINE_MODEL):
+        if m and m not in out:
+            out.append(m)
+    return out
+
+
+def _next_model(errors: list, candidates: list) -> None:
+    """Пише в лог, що модель не відповіла і кого питаємо далі (або що нікого)."""
+    m, e = errors[-1]
+    why = f"{type(e).__name__}: {str(e)[:150]}"
+    if len(errors) < len(candidates):
+        log.warning(f"LLM {m} не відповіла ({why}), пробую {candidates[len(errors)]}")
+    elif len(errors) > 1:
+        log.error(f"LLM резерв {m} теж не відповів: {why}")
 
 
 def _usage_tokens(obj) -> int:
@@ -125,23 +155,20 @@ def llm_chat(model: str, messages, fallback=None, **kw):
     Єдина точка виклику моделі. Сама підставляє параметри під провайдера.
 
     Якщо модель не відповіла з БУДЬ-ЯКОЇ причини (429, таймаут, 5xx, обрив
-    мережі, модель прибрали), питаємо резервну на іншому провайдері.
+    мережі, модель прибрали), питаємо резервну на іншому провайдері, а далі
+    локальну (див. _candidates).
     fallback: None → автоматично інша модель пари основна/резервна;
               False → без резерву (зір: на Groq моделей із зображеннями немає).
     Якщо не відповіла жодна, кидає LLMUnavailable.
     """
-    try:
-        return _llm_call(model, messages, **kw)
-    except Exception as e:
-        alt = _fallback_for(model) if fallback is None else fallback
-        if not alt or alt == model:
-            raise LLMUnavailable([(model, e)]) from e
-        log.warning(f"LLM {model} не відповіла ({type(e).__name__}: {str(e)[:150]}), пробую {alt}")
+    candidates, errors = _candidates(model, fallback), []
+    for m in candidates:
         try:
-            return _llm_call(alt, messages, **kw)
-        except Exception as e2:
-            log.error(f"LLM резерв {alt} теж не відповів: {type(e2).__name__}: {str(e2)[:150]}")
-            raise LLMUnavailable([(model, e), (alt, e2)]) from e2
+            return _llm_call(m, messages, **kw)
+        except Exception as e:
+            errors.append((m, e))
+            _next_model(errors, candidates)
+    raise LLMUnavailable(errors) from errors[-1][1]
 
 
 def _stream_text(stream, model: str = ""):
@@ -174,18 +201,16 @@ def llm_stream(model: str, messages, fallback=None, **kw):
         pieces = _stream_text(stream, m)
         return next(pieces, ""), pieces   # чекаємо перший шматок тексту
 
-    try:
-        first, rest = _open(model)
-    except Exception as e:
-        alt = _fallback_for(model) if fallback is None else fallback
-        if not alt or alt == model:
-            raise LLMUnavailable([(model, e)]) from e
-        log.warning(f"LLM {model} не відповіла ({type(e).__name__}: {str(e)[:150]}), пробую {alt}")
+    candidates, errors = _candidates(model, fallback), []
+    for m in candidates:
         try:
-            first, rest = _open(alt)
-        except Exception as e2:
-            log.error(f"LLM резерв {alt} теж не відповів: {type(e2).__name__}: {str(e2)[:150]}")
-            raise LLMUnavailable([(model, e), (alt, e2)]) from e2
+            first, rest = _open(m)
+            break
+        except Exception as e:
+            errors.append((m, e))
+            _next_model(errors, candidates)
+    else:
+        raise LLMUnavailable(errors) from errors[-1][1]
     if first:
         yield first
     yield from rest
