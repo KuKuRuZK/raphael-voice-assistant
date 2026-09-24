@@ -2,6 +2,7 @@
 Моделі: Groq, Gemini і Ollama за одним OpenAI-сумісним API, резервна
 модель на будь-яку помилку, розбір тегів дій [ACTION:тип:параметр].
 """
+import json
 import logging
 import re
 
@@ -144,6 +145,8 @@ def _usage_tokens(obj) -> int:
 
 def _llm_call(model: str, messages, **kw):
     cli, bare = _llm(model)
+    if model.startswith("local:"):
+        kw.pop("tools", None)             # локальні моделі функцій часто не вміють
     resp = cli.chat.completions.create(model=bare, messages=messages,
                                        **_model_kwargs(bare), **kw)
     usage.record(model, tokens=_usage_tokens(resp))
@@ -214,6 +217,46 @@ def llm_stream(model: str, messages, fallback=None, **kw):
     if first:
         yield first
     yield from rest
+
+
+# ── Tool calling (TOOL_CALLING, типово вимкнено) ─────────────────────────────
+# Одна функція на всі дії, а не сотня окремих: перелік дій і формат параметрів
+# уже є в системному промпті, і сотня схем зʼїла б денний ліміт токенів.
+ACTION_TOOL = {"type": "function", "function": {
+    "name": "do_action",
+    "description": "Виконати одну дію з переліку ДІЇ в системних інструкціях.",
+    "parameters": {"type": "object", "properties": {
+        "type":  {"type": "string", "description": "назва дії, напр. spotify_play"},
+        "param": {"type": "string",
+                  "description": "параметр, як після двокрапки в тегі; порожній, якщо не потрібен"},
+    }, "required": ["type"]},
+}}
+
+
+def tool_kwargs() -> dict:
+    return {"tools": [ACTION_TOOL]} if cfg.TOOL_CALLING else {}
+
+
+def _tool_action(message) -> str:
+    """
+    Перший виклик do_action з відповіді моделі у вигляді тегу
+    [ACTION:тип:параметр], або "". Далі дія йде тим самим шляхом, що й тег
+    у тексті: ті самі перевірки небезпечних дій і підтвердження.
+    """
+    for call in getattr(message, "tool_calls", None) or []:
+        fn = getattr(call, "function", None)
+        if getattr(fn, "name", "") != "do_action":
+            continue
+        try:
+            args = json.loads(getattr(fn, "arguments", "") or "{}")
+        except ValueError:
+            log.warning(f"do_action: не JSON у параметрах: {getattr(fn, 'arguments', '')!r}")
+            continue
+        action = str(args.get("type") or "").strip().lower()
+        if re.fullmatch(r"[a-z_]+", action):
+            param = str(args.get("param") or "").replace("]", ")").strip()
+            return f"[ACTION:{action}:{param}]"
+    return ""
 
 
 # Розбір тега дії. Терпимий до пробілів і регістру: gpt-oss інколи пише

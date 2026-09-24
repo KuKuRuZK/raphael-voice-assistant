@@ -188,6 +188,12 @@ USAGE_PATH  = os.path.join(SCRIPT_DIR, "usage.json")    # лічильник д�
 #   uk_UA-ukrainian_tts-medium.onnx разом з .onnx.json з
 #   huggingface.co/rhasspy/piper-voices. Поклади все в теку piper/ поруч з lin.py.
 OFFLINE_MODEL = ""
+
+# Tool calling: модель викликає функцію do_action(type, param) замість того,
+# щоб дописувати тег [ACTION:тип:параметр] у текст. Надійніше, ніж розбирати
+# текст, але поки експериментально, тому вимкнено. Теги розбираються й далі,
+# а локальна модель функцій не отримує (не всі їх підтримують).
+TOOL_CALLING = False
 PIPER_EXE   = os.path.join(_ROOT, "piper", "piper.exe")
 PIPER_MODEL = os.path.join(_ROOT, "piper", "uk_UA-ukrainian_tts-medium.onnx")
 
@@ -253,7 +259,7 @@ def _load_config():
         "VISION_MODEL", "CALENDAR_TZ", "CALENDAR_REMIND_MINUTES",
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
         "FAST_MODEL", "WAKE_ENGINE", "BRAIN_VAULT",
-        "OFFLINE_MODEL", "PIPER_EXE", "PIPER_MODEL",
+        "OFFLINE_MODEL", "PIPER_EXE", "PIPER_MODEL", "TOOL_CALLING",
     ]
     applied = []
     for k in simple:

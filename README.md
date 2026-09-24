@@ -62,6 +62,12 @@ audio per model per day (tokens as the provider reports them), warns once at
 80% and at 100%, and answers "скільки лімітів". It is a local estimate: the
 limits in `DAILY_LIMITS` are overridable in `config.json`.
 
+Actions come back as an `[ACTION:type:param]` tag in the reply text. With
+`"TOOL_CALLING": true` the model instead calls a single `do_action(type, param)`
+function; the call is turned into the same tag, so the same checks
+(dangerous actions need explicit intent, irreversible ones ask first) apply.
+It is off by default while it is being tried out.
+
 **Mail triage as a separate module.** [`mail_triage.py`](raphael/mail_triage.py) classifies
 incoming mail into ten categories and archives the noise. It lives outside the
 main file so the rules can be edited and tested

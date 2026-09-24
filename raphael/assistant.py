@@ -111,6 +111,7 @@ def ask_lin(user_input: str) -> str:
             # модель зупиняється сама, зайвий ліміт нічого не коштує.
             max_tokens=700,
             temperature=0.7,
+            **llm.tool_kwargs(),
         )
     except llm.LLMUnavailable as e:
         history.pop()          # запит без відповіді не лишаємо в історії
@@ -123,7 +124,13 @@ def ask_lin(user_input: str) -> str:
     # content буває None чи порожнім (міркувальна модель витратила весь ліміт
     # на думання). Такого не можна класти в історію: наступний запит з
     # assistant-повідомленням без тексту провайдер може відхилити.
-    reply = (response.choices[0].message.content or "").strip()
+    message = response.choices[0].message
+    reply = (message.content or "").strip()
+    # Виклик функції стає звичайним тегом у кінці відповіді: так його бачать
+    # усі перевірки нижче, а в історії лишається текст без незакритих викликів
+    tool_tag = llm._tool_action(message)
+    if tool_tag:
+        reply = f"{reply} {tool_tag}".strip()
     log.info(f"Відповідь: '{reply}'")
     if not reply:
         history.pop()
