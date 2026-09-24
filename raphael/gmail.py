@@ -2,6 +2,7 @@
 Gmail: кілька скриньок, сортування mail_triage, читання, пошук, чернетки
 і перевірка нових листів для монітора. Тут же спільні OAuth-креденшели Google.
 """
+import itertools
 import logging
 import os
 
@@ -352,19 +353,27 @@ def _gmail_read_full(query: str = "") -> None:
         body = " ".join(body.split())   # прибираємо зайві пробіли/переноси
 
         if len(body) > 600:
-            # Довгий лист — стискаємо через Groq
-            try:
-                resp = llm.llm_chat(
+            # Довгий лист стискає модель. Заголовок звучить одразу, переказ
+            # потоком слідом; не вдалося переказати, читаємо початок листа.
+            def _summary():
+                stream = llm.llm_stream(
                     cfg.GROQ_PRIMARY_MODEL,
                     messages=[{"role": "user", "content":
                         f"Перекажи КОРОТКО українською (2-3 речення) суть цього листа:\n\n{body[:2500]}"}],
                     max_tokens=180, temperature=0.3,
                 )
-                body = resp.choices[0].message.content.strip()
-                tts.speak(f"Лист від {sender}, тема «{subject}». Коротко: {body}")
-                return
-            except Exception:
-                body = body[:500] + "…"
+                try:
+                    first = next(stream, "")
+                except Exception as e:
+                    log.error(f"Gmail переказ: {e}")
+                    yield f"Переказати не вийшло, ось початок: {body[:500]}…"
+                    return
+                yield "Коротко: " + first
+                yield from stream
+
+            tts.speak_stream(itertools.chain([f"Лист від {sender}, тема «{subject}». "], _summary()))
+            log.info(f"Gmail read full: {subject}")
+            return
         tts.speak(f"Лист від {sender}, тема «{subject}». {body}")
         log.info(f"Gmail read full: {subject}")
     except Exception as e:

@@ -129,6 +129,48 @@ def llm_chat(model: str, messages, fallback=None, **kw):
             raise LLMUnavailable([(model, e), (alt, e2)]) from e2
 
 
+def _stream_text(stream):
+    """Текстові шматки з потоку OpenAI chat.completions (міркування пропускаємо)."""
+    for chunk in stream:
+        if not getattr(chunk, "choices", None):
+            continue                      # службові шматки (usage тощо)
+        piece = getattr(chunk.choices[0].delta, "content", None)
+        if piece:
+            yield piece
+
+
+def llm_stream(model: str, messages, fallback=None, **kw):
+    """
+    Як llm_chat, але віддає текст шматками, поки модель його пише: для
+    довгих відповідей, які одразу йдуть в озвучку (tts.speak_stream).
+
+    Резерв можливий лише до першого шматка тексту. Якщо модель впала вже
+    посеред відповіді, почате не повторюємо іншою моделлю: це звучало б як
+    дві різні відповіді підряд. Потік тоді просто обривається винятком.
+    """
+    def _open(m):
+        cli, bare = _llm(m)
+        pieces = _stream_text(cli.chat.completions.create(
+            model=bare, messages=messages, stream=True, **_model_kwargs(bare), **kw))
+        return next(pieces, ""), pieces   # чекаємо перший шматок тексту
+
+    try:
+        first, rest = _open(model)
+    except Exception as e:
+        alt = _fallback_for(model) if fallback is None else fallback
+        if not alt or alt == model:
+            raise LLMUnavailable([(model, e)]) from e
+        log.warning(f"LLM {model} не відповіла ({type(e).__name__}: {str(e)[:150]}), пробую {alt}")
+        try:
+            first, rest = _open(alt)
+        except Exception as e2:
+            log.error(f"LLM резерв {alt} теж не відповів: {type(e2).__name__}: {str(e2)[:150]}")
+            raise LLMUnavailable([(model, e), (alt, e2)]) from e2
+    if first:
+        yield first
+    yield from rest
+
+
 # Розбір тега дії. Терпимий до пробілів і регістру: gpt-oss інколи пише
 # "[ ACTION:spotify_pause: ]", і сувора версія такий тег просто не бачила.
 _ACTION_RE = re.compile(r"\[\s*(?:ACTION\s*:\s*)?([A-Za-z_]+)\s*:\s*([^\]]*?)\s*\]", re.IGNORECASE)

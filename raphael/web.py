@@ -39,8 +39,8 @@ def _silent_web_search(query: str):
             combined = "\n".join(snippets[:3])
             log.info(f"Web search '{query}': {len(snippets)} результатів")
 
-            # Модель підсумовує коротко для TTS
-            resp = llm.llm_chat(
+            # Модель підсумовує коротко, озвучка йде потоком
+            answer = tts.speak_stream(llm.llm_stream(
                 cfg.GROQ_PRIMARY_MODEL,
                 messages=[{
                     "role": "user",
@@ -51,10 +51,8 @@ def _silent_web_search(query: str):
                 }],
                 max_tokens=180,
                 temperature=0.4,
-            )
-            answer = resp.choices[0].message.content.strip()
+            ))
             log.info(f"Web answer: {answer[:120]}")
-            tts.speak(answer)
 
         except Exception as e:
             log.error(f"Silent search error: {e}", exc_info=True)

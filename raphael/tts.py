@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import queue
 import re
 import tempfile
 import threading
@@ -157,54 +158,175 @@ def _tts_play(path: str):
     pygame.mixer.music.unload()
 
 
-def speak(text: str):
-    global _last_spoken, _tts_epoch, _tts_last_end
-    if not text or not text.strip():
-        return
-    text = _strip_md(text)
-    if not text:
-        return
-
-    _last_spoken = text   # зберігаємо для "повтори"
-    log.debug(f"TTS: '{text[:50]}...' " if len(text) > 50 else f"TTS: '{text}'")
-    _tts_stop.clear()
-    if runtime.LIN_UI:
-        runtime.LIN_UI.safe_set_state("speaking", text)
-    with _tts_lock:  # один потік говорить за раз
-        _tts_epoch += 1
-        _tts_active.set()
-        tmp = None
+def _tts_audio(text: str) -> tuple:
+    """mp3 для фрази: з кешу або щойно синтезований. → (шлях, чи тимчасовий файл)."""
+    cached = _tts_cache_path(text)
+    if cached and os.path.exists(cached):
         try:
-            cached = _tts_cache_path(text)
-            if cached and os.path.exists(cached):
-                path = cached
-                try:
-                    os.utime(cached, None)          # свіжий для _tts_cache_trim
-                except Exception:
-                    pass
-            elif cached:
-                os.makedirs(TTS_CACHE_DIR, exist_ok=True)
-                tmp = cached + ".part"              # недописаний файл не потрапить у кеш
-                _tts_synth_to(tmp, text)
-                os.replace(tmp, cached)
-                path, tmp = cached, None
-                _tts_cache_trim()
-            else:
-                fd, tmp = tempfile.mkstemp(suffix=".mp3")
-                os.close(fd)
-                _tts_synth_to(tmp, text)
-                path = tmp
-            _tts_play(path)
-            log.debug("TTS: завершено")
-        except Exception as e:
-            log.error(f"TTS помилка: {e}", exc_info=True)
+            os.utime(cached, None)          # свіжий для _tts_cache_trim
+        except Exception:
+            pass
+        return cached, False
+    if cached:
+        os.makedirs(TTS_CACHE_DIR, exist_ok=True)
+        part = cached + ".part"             # недописаний файл не потрапить у кеш
+        try:
+            _tts_synth_to(part, text)
+            os.replace(part, cached)
         finally:
-            if tmp:
+            if os.path.exists(part):
+                os.unlink(part)
+        _tts_cache_trim()
+        return cached, False
+    fd, tmp = tempfile.mkstemp(suffix=".mp3")
+    os.close(fd)
+    try:
+        _tts_synth_to(tmp, text)
+    except Exception:
+        os.unlink(tmp)
+        raise
+    return tmp, True
+
+
+# ── Озвучка по реченнях ───────────────────────────────────────────────────────
+# Раніше весь текст синтезувався цілком і лише потім починав звучати: на
+# довгих фразах (брифінг, список листів, подій) це секунда-дві тиші. Тепер
+# текст ріжеться на речення, і наступне синтезується, поки звучить поточне.
+# Те саме працює для відповіді моделі, що приходить потоком (llm.llm_stream):
+# перше речення звучить, поки модель ще пише решту.
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+|\n+")
+TTS_MIN_CHUNK = 80      # дрібні речення після першого склеюються до такої довжини
+
+
+def _drop_code_blocks(chunks):
+    """Прибирає ```блоки коду``` з потоку тексту: код уголос не читаємо."""
+    in_code = False
+    for chunk in chunks:
+        parts = (chunk or "").split("```")
+        out = []
+        for i, part in enumerate(parts):
+            if i:
+                in_code = not in_code
+                out.append(" ")
+            if not in_code:
+                out.append(part)
+        yield "".join(out)
+
+
+def _sentences(chunks):
+    """
+    Шматки тексту (рядок або потік від моделі) → фрази для синтезу.
+    Перше речення віддається одразу, щоб швидше зазвучало; наступні
+    дрібні склеюються до TTS_MIN_CHUNK, щоб не робити зайвих запитів.
+    """
+    buf, pending, first = "", "", True
+    for chunk in _drop_code_blocks(chunks):
+        buf += chunk
+        while True:
+            m = _SENTENCE_END.search(buf)
+            if not m:
+                break
+            piece, buf = buf[:m.start()].strip(), buf[m.end():]
+            if not piece:
+                continue
+            pending = f"{pending} {piece}" if pending else piece
+            if first or len(pending) >= TTS_MIN_CHUNK:
+                yield pending
+                pending, first = "", False
+    rest = f"{pending} {buf.strip()}".strip()
+    if rest:
+        yield rest
+
+
+def speak_stream(chunks) -> str:
+    """
+    Говорить текст, що надходить шматками: генератор відповіді моделі або
+    список рядків. Наступне речення синтезується, поки грає поточне.
+    Повертає все, що прозвучало. Якщо джерело впало раніше, ніж щось
+    прозвучало (модель не відповіла), виняток перекидається тому, хто
+    викликав, щоб той міг сказати «не вдалося».
+    """
+    global _last_spoken, _tts_epoch, _tts_last_end
+    _tts_stop.clear()
+    spoken, failure = [], []
+    ready = queue.Queue(maxsize=2)      # синтез щонайбільше на 2 речення наперед
+
+    def _produce():
+        try:
+            for sentence in _sentences(chunks):
+                if _tts_stop.is_set():
+                    break
+                clean = _strip_md(sentence)
+                if not clean:
+                    continue
                 try:
-                    os.unlink(tmp)
-                except Exception:
-                    pass
-            _tts_last_end = time.monotonic()
-            _tts_active.clear()
+                    audio = _tts_audio(clean)
+                except Exception as e:
+                    # Найчастіше це немає інтернету: решту речень теж не
+                    # синтезуємо, щоб не чекати таймаут на кожному
+                    log.error(f"TTS помилка: {e}", exc_info=True)
+                    break
+                spoken.append(clean)
+                ready.put((clean, audio))
+        except Exception as e:
+            failure.append(e)
+            log.error(f"TTS: джерело тексту обірвалось: {e}")
+        finally:
+            ready.put(None)
+
+    with _tts_lock:  # один потік говорить за раз
+        producer = threading.Thread(target=_produce, daemon=True)
+        producer.start()
+        playing = False
+        try:
+            while True:
+                item = ready.get()
+                if item is None:
+                    break
+                text, (path, temporary) = item
+                try:
+                    if _tts_stop.is_set():
+                        continue
+                    if not playing:
+                        # Лічильник і прапорець піднімаються з першим звуком, а не
+                        # з початком синтезу: listen() відкидає лише запис, під
+                        # час якого справді щось звучало
+                        _tts_epoch += 1
+                        _tts_active.set()
+                        playing = True
+                    log.debug(f"TTS: '{text[:50]}...' " if len(text) > 50 else f"TTS: '{text}'")
+                    if runtime.LIN_UI:
+                        runtime.LIN_UI.safe_set_state("speaking", text)
+                    try:
+                        _tts_play(path)
+                    except Exception as e:
+                        # Звук зламався: решту не граємо, але чергу дочитуємо,
+                        # щоб потік синтезу не завис на повній черзі
+                        log.error(f"TTS: програвання не вдалося: {e}", exc_info=True)
+                        _tts_stop.set()
+                finally:
+                    if temporary:
+                        try:
+                            os.unlink(path)
+                        except Exception:
+                            pass
+            producer.join(timeout=5)
+            log.debug("TTS: завершено")
+        finally:
+            if playing:
+                _tts_last_end = time.monotonic()
+                _tts_active.clear()
     if runtime.LIN_UI:
         runtime.LIN_UI.safe_set_state("idle")
+    text = " ".join(spoken)
+    if text:
+        _last_spoken = text   # зберігаємо для "повтори"
+    elif failure:
+        raise failure[0]
+    return text
+
+
+def speak(text: str):
+    if not text or not text.strip():
+        return
+    speak_stream([text])

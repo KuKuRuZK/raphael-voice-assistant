@@ -194,7 +194,8 @@ def brain_ask(question: str) -> None:
                 tts.speak("Нотатки знайшла, але прочитати не змогла.")
                 return
             log.info(f"Brain ask '{question}': {[i['name'] for i in found]}")
-            resp = llm.llm_chat(
+            # Потоком: перше речення звучить, поки модель дописує решту
+            answer = tts.speak_stream(llm.llm_stream(
                 cfg.GROQ_PRIMARY_MODEL,
                 # Задача сформульована як «перекажи, що є по темі», а НЕ як
                 # «відповідай на питання». Причина: запит приходить із
@@ -218,10 +219,8 @@ def brain_ask(question: str) -> None:
                 )}],
                 max_tokens=220,
                 temperature=0.3,
-            )
-            answer = resp.choices[0].message.content.strip()
+            ))
             log.info(f"Brain answer: {answer[:120]}")
-            tts.speak(answer)
         except Exception as e:
             log.error(f"Brain ask помилка: {e}", exc_info=True)
             tts.speak("Не вийшло подивитись у мозок.")
