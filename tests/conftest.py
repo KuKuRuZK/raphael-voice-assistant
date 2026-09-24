@@ -72,6 +72,8 @@ def env(lin, tmp_path):
     e.patch("speak", lambda text: e.spoken.append(text))
     e.patch("NOTES_PATH", str(tmp_path / "notes.json"))
     e.patch("MEMORY_PATH", str(tmp_path / "memory.json"))
+    e.patch("USAGE_PATH", str(tmp_path / "usage.json"))
+    e.patch("_state", None)
     e.patch("_notes_cache", [])
     e.patch("_notes_cache_time", 0.0)
     yield e

@@ -55,6 +55,13 @@ the fallback, and SDK retries are off, so the switch takes seconds rather than
 a minute of silence. Short, unambiguous commands ("пауза", "наступний трек",
 "котра година") skip the model entirely.
 
+Free tiers have daily limits. On gpt-oss-120b the daily token budget (200K) is
+likely to run out before the 1000 requests, because every request carries the
+whole system prompt (about 8.6K characters). [`usage.py`](raphael/usage.py) counts requests, tokens and seconds of
+audio per model per day (tokens as the provider reports them), warns once at
+80% and at 100%, and answers "скільки лімітів". It is a local estimate: the
+limits in `DAILY_LIMITS` are overridable in `config.json`.
+
 **Mail triage as a separate module.** [`mail_triage.py`](raphael/mail_triage.py) classifies
 incoming mail into ten categories and archives the noise. It lives outside the
 main file so the rules can be edited and tested

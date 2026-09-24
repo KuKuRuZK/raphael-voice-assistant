@@ -16,6 +16,7 @@ from groq import Groq
 from raphael import runtime
 from raphael import settings as cfg
 from raphael import tts
+from raphael import usage
 
 log = logging.getLogger("Лін")
 
@@ -101,6 +102,8 @@ def _transcribe_whisper(audio) -> str:
             prompt=_WHISPER_PROMPT,
             temperature=0.0,   # детерміновано — менше «домальованих» фраз на шумі
         )
+        usage.record("groq:whisper-large-v3-turbo",
+                     seconds=len(audio.get_raw_data()) / (audio.sample_rate * audio.sample_width))
         text = (result or "").strip().lower()
         if _is_noise(text):
             log.debug(f"Whisper галюцинація/шум — ігнорую: '{text}'")

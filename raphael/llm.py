@@ -6,6 +6,7 @@ import logging
 import re
 
 from raphael import settings as cfg
+from raphael import usage
 
 log = logging.getLogger("Лін")
 
@@ -99,10 +100,24 @@ def _fallback_for(model: str) -> str:
     return cfg.GROQ_FALLBACK_MODEL if model == cfg.GROQ_PRIMARY_MODEL else cfg.GROQ_PRIMARY_MODEL
 
 
+def _usage_tokens(obj) -> int:
+    """Скільки токенів порахував провайдер (usage у відповіді чи x_groq у потоці)."""
+    u = getattr(obj, "usage", None)
+    if u is None:
+        extra = getattr(obj, "x_groq", None)
+        u = extra.get("usage") if isinstance(extra, dict) else getattr(extra, "usage", None)
+    if u is None:
+        return 0
+    n = u.get("total_tokens") if isinstance(u, dict) else getattr(u, "total_tokens", 0)
+    return n if isinstance(n, int) else 0
+
+
 def _llm_call(model: str, messages, **kw):
     cli, bare = _llm(model)
-    return cli.chat.completions.create(model=bare, messages=messages,
+    resp = cli.chat.completions.create(model=bare, messages=messages,
                                        **_model_kwargs(bare), **kw)
+    usage.record(model, tokens=_usage_tokens(resp))
+    return resp
 
 
 def llm_chat(model: str, messages, fallback=None, **kw):
@@ -129,9 +144,12 @@ def llm_chat(model: str, messages, fallback=None, **kw):
             raise LLMUnavailable([(model, e), (alt, e2)]) from e2
 
 
-def _stream_text(stream):
+def _stream_text(stream, model: str = ""):
     """Текстові шматки з потоку OpenAI chat.completions (міркування пропускаємо)."""
     for chunk in stream:
+        tokens = _usage_tokens(chunk)     # приходить в останньому шматку, якщо взагалі
+        if tokens and model:
+            usage.record(model, requests=0, tokens=tokens)
         if not getattr(chunk, "choices", None):
             continue                      # службові шматки (usage тощо)
         piece = getattr(chunk.choices[0].delta, "content", None)
@@ -150,8 +168,10 @@ def llm_stream(model: str, messages, fallback=None, **kw):
     """
     def _open(m):
         cli, bare = _llm(m)
-        pieces = _stream_text(cli.chat.completions.create(
-            model=bare, messages=messages, stream=True, **_model_kwargs(bare), **kw))
+        stream = cli.chat.completions.create(
+            model=bare, messages=messages, stream=True, **_model_kwargs(bare), **kw)
+        usage.record(m)
+        pieces = _stream_text(stream, m)
         return next(pieces, ""), pieces   # чекаємо перший шматок тексту
 
     try:

@@ -26,6 +26,7 @@ from raphael import slack_chat
 from raphael import sysmon
 from raphael import timers
 from raphael import tts
+from raphael import usage
 from raphael import voice_rules as vr
 from raphael import web
 
@@ -552,6 +553,9 @@ def execute_action(action_str: str):
             threading.Thread(
                 target=lambda: tts.speak(sysmon._system_health_report()), daemon=True
             ).start()
+
+        elif t == "usage_report":
+            tts.speak(usage.report_text())
             return
 
         elif t == "web_search":

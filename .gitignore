@@ -27,6 +27,8 @@ watchdog.log
 memory.json
 notes.json
 notes_backup.json
+# лічильник денних лімітів моделей
+usage.json
 # тимчасові файли атомарного запису (notes.json.tmp тощо)
 *.tmp
 

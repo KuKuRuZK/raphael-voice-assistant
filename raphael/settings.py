@@ -176,6 +176,17 @@ ALIVE_AFTER  = 120
 # ── Файли даних ───────────────────────────────────────────────────────────────
 NOTES_PATH  = os.path.join(SCRIPT_DIR, "notes.json")    # нотатки й нагадування
 MEMORY_PATH = os.path.join(SCRIPT_DIR, "memory.json")   # памʼять між сесіями
+USAGE_PATH  = os.path.join(SCRIPT_DIR, "usage.json")    # лічильник денних лімітів
+
+# ── Денні ліміти безкоштовного рівня (для попереджень і «скільки лімітів») ──
+# Ключ «провайдер:модель». Значення з таблиць Groq і Gemini на момент запису;
+# свої дивись на console.groq.com/settings/limits і в Google AI Studio, а
+# змінюй у config.json (DAILY_LIMITS). Модель без ліміту тут просто рахується.
+DAILY_LIMITS = {
+    "groq:openai/gpt-oss-120b":     {"requests": 1000, "tokens": 200_000},
+    "groq:whisper-large-v3-turbo":  {"requests": 2000, "seconds": 28_800},
+    "gemini:gemini-3.1-flash-lite": {"requests": 500},
+}
 
 # ── Другий мозок (сховище Obsidian) ───────────────────────────────────────────
 # Пишемо прямо у файл, а не через REST API плагіна: так працює навіть коли
@@ -245,6 +256,10 @@ def _load_config():
     if isinstance(cfg.get("SYS_THRESHOLDS"), dict):
         g["SYS_THRESHOLDS"].update(cfg["SYS_THRESHOLDS"])
         applied.append("SYS_THRESHOLDS")
+
+    if isinstance(cfg.get("DAILY_LIMITS"), dict):
+        g["DAILY_LIMITS"].update(cfg["DAILY_LIMITS"])
+        applied.append("DAILY_LIMITS")
 
     if isinstance(cfg.get("GMAIL_LABELS"), list):
         for i, lbl in enumerate(cfg["GMAIL_LABELS"]):
