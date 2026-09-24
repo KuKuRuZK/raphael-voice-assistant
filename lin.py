@@ -1,5 +1,7 @@
 import asyncio
 import difflib
+import hashlib
+import itertools
 import json
 import logging
 import logging.handlers
@@ -12,7 +14,35 @@ import tempfile
 import threading
 import time
 import tkinter as tk
+import urllib.parse
 from datetime import datetime, timedelta
+
+# ── Падіння мають лишати слід ─────────────────────────────────────────────────
+# Під pythonw немає консолі (sys.stderr = None). Помилка до налаштування логів,
+# наприклад не встановлена бібліотека, зникала безслідно, а start.bat тихо
+# перезапускав Рафаеля кожні 5 секунд. Тепер traceback іде в crash.log.
+import sys
+import traceback
+_PYTHONW = sys.stderr is None or os.path.basename(sys.executable).lower() == "pythonw.exe"
+if _PYTHONW:
+    try:
+        sys.stderr = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log"),
+                          "a", encoding="utf-8", buffering=1)
+        import faulthandler
+        faulthandler.enable(sys.stderr)       # падіння всередині C-бібліотек (pygame, pyaudio)
+    except Exception:
+        pass
+
+
+def _crash_hook(tp, val, tb):
+    try:
+        sys.stderr.write(f"\n=== {datetime.now():%Y-%m-%d %H:%M:%S} ===\n")
+        traceback.print_exception(tp, val, tb)
+    except Exception:
+        pass
+
+
+sys.excepthook = _crash_hook
 
 import edge_tts
 import psutil
@@ -43,6 +73,11 @@ try:
     import mail_triage
 except Exception:
     mail_triage = None
+
+# Розбір фраз: ім'я, «повтори», миттєві команди, час нагадувань, відмінки.
+# Чисті функції з тестами (tests/test_voice_rules.py).
+import voice_rules as vr
+import spotify_common
 
 pyautogui.FAILSAFE = False
 
@@ -210,6 +245,10 @@ _ptt_event = threading.Event()     # ставиться коли натисну�
 
 # ── Watchdog (авто-перезапуск) ────────────────────────────────────────────────
 STOP_MARKER = os.path.join(SCRIPT_DIR, ".lin_stop")   # створюється при свідомому виході
+# Рафаель пропрацював ALIVE_AFTER секунд → старт вдався. start.bat за цим файлом
+# відрізняє падіння на старті (зламана установка) від випадкового збою.
+ALIVE_MARKER = os.path.join(SCRIPT_DIR, ".lin_alive")
+ALIVE_AFTER  = 120
 
 # ============================================================
 #  РЕЖИМИ
@@ -222,11 +261,7 @@ LIN_UI = None   # встановлюється в main()
 
 _last_spoken = ""   # остання фраза Лін — для команди "повтори"
 
-REPEAT_WORDS = {
-    "повтори", "повторити", "повтор", "repeat",
-    "не чув", "не почув", "не почула", "не розчув",
-    "що ти сказала", "що сказала", "скажи ще раз", "ще раз",
-}
+# Фрази «повтори»: voice_rules.REPEAT_PHRASES / is_repeat_request.
 
 CHAT_MODE_TRIGGERS   = {
     "режим розмови", "chat mode", "розмовний режим", "говори зі мною", "speak mode",
@@ -242,25 +277,8 @@ DICTATION_TRIGGERS = {
     "режим диктування", "диктуй", "dictation", "диктування",
     "режим введення", "починай диктувати", "стартуй диктування",
 }
-DICTATION_EXIT_WORDS = {
-    "стоп", "зупини", "стоп диктування", "вийди з диктування",
-    "кінець", "завершити диктування", "stop dictation",
-}
-# Пунктуація голосом під час диктування
-_DICTATION_PUNCT = {
-    # ВАЖЛИВО: довші фрази — першими, щоб "крапка з комою" не перекрилась "крапкою"
-    "крапка з комою":  ";",
-    "знак питання":    "?",
-    "знак оклику":     "!",
-    "відкрити дужку":  "(",
-    "закрити дужку":   ")",
-    "новий рядок":     "\n",
-    "абзац":           "\n\n",
-    "двокрапка":       ":",
-    "крапка":          ".",
-    "кома":            ",",
-    "тире":            " — ",
-}
+# Вихід з диктування і голосова пунктуація: voice_rules.is_dictation_exit
+# та voice_rules.apply_voice_punctuation (цілими словами, з тестами).
 
 # ── Динамічна швидкість голосу ────────────────────────────────────────────────
 _VOICE_RATE_VALUE = 25   # поточний відсоток (ціле число)
@@ -297,39 +315,25 @@ def _load_notes() -> list:
     return _notes_cache
 
 
+def _write_json_atomic(path: str, data):
+    """Запис через тимчасовий файл: якщо процес впаде посеред запису (а watchdog
+    його одразу підніме), на диску лишиться стара версія, а не обрізаний JSON."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
+
 def _save_notes(notes: list):
     global _notes_cache, _notes_cache_time
-    with open(NOTES_PATH, "w", encoding="utf-8") as f:
-        json.dump(notes, f, ensure_ascii=False, indent=2)
+    _write_json_atomic(NOTES_PATH, notes)
     _notes_cache = notes          # одразу оновлюємо кеш
     _notes_cache_time = time.monotonic()
 
 
-def parse_remind_time(value: str) -> str | None:
-    """
-    Парсить час нагадування. Підтримує:
-      - "21:00" або "9:30"  → сьогодні о вказаний час (або завтра якщо вже минув)
-      - "30"               → через 30 хвилин
-    Повертає рядок "YYYY-MM-DD HH:MM" або None.
-    """
-    value = value.strip()
-    if not value or value == "0":
-        return None
-    # Абсолютний час "HH:MM"
-    m = re.match(r"^(\d{1,2}):(\d{2})$", value)
-    if m:
-        h, mn = int(m.group(1)), int(m.group(2))
-        now = datetime.now()
-        target = now.replace(hour=h, minute=mn, second=0, microsecond=0)
-        if target <= now:
-            target += timedelta(days=1)  # вже минув — ставимо на завтра
-        return target.strftime("%Y-%m-%d %H:%M")
-    # Відносний час (хвилини)
-    if value.isdigit():
-        mins = int(value)
-        if mins > 0:
-            return (datetime.now() + timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M")
-    return None
+# Розбір часу нагадування живе в voice_rules (там тести): "21:00", "30",
+# "2026-09-26 09:00". Неможливий час чи минула дата дають None, а не виняток.
+parse_remind_time = vr.parse_remind_time
 
 
 def note_add(text: str, remind_minutes: int = 0, remind_at_str: str = "") -> str:
@@ -339,6 +343,12 @@ def note_add(text: str, remind_minutes: int = 0, remind_at_str: str = "") -> str
     remind_at = None
     if remind_at_str:
         remind_at = parse_remind_time(remind_at_str)
+        if remind_at is None:
+            # Раніше тут мовчки записувалась звичайна нотатка, а Рафаель казав
+            # «Записала», і ти думав, що нагадування буде. Тепер чесно.
+            log.warning(f"Нагадування: не зрозуміла час '{remind_at_str}' для «{text}»")
+            return (f"Не зрозуміла, коли нагадати про «{text}». Скажи, наприклад, "
+                    "о 21:00, через 30 хвилин або завтра о 9.")
     elif remind_minutes > 0:
         remind_at = (datetime.now() + timedelta(minutes=remind_minutes)).strftime("%Y-%m-%d %H:%M")
     note = {
@@ -352,7 +362,7 @@ def note_add(text: str, remind_minutes: int = 0, remind_at_str: str = "") -> str
     _save_notes(notes)
     log.info(f"Нотатка додана #{new_id}: {text}" + (f" (нагадування: {remind_at})" if remind_at else ""))
     if remind_at:
-        return f"Записала: «{text}». Нагадаю о {remind_at[11:]}."
+        return f"Записала: «{text}». Нагадаю {vr.describe_remind(remind_at)}."
     return f"Записала: «{text}»."
 
 
@@ -363,7 +373,7 @@ def note_list() -> str:
         return "Нотаток немає."
     lines = []
     for n in notes:
-        remind = f" (нагадування о {n['remind_at'][11:]})" if n.get("remind_at") else ""
+        remind = f" (нагадування {vr.describe_remind(n['remind_at'])})" if n.get("remind_at") else ""
         lines.append(f"{n['id']}. {n['text']}{remind}")
     return "Твої плани: " + ". ".join(lines)
 
@@ -410,11 +420,11 @@ def note_clear(which: str = "all") -> str:
             return "Виконаних планів немає."
         _save_notes(kept)
         log.info(f"Очищено виконаних планів: {removed}")
-        return f"Прибрала {removed} виконаних планів."
+        return f"Прибрала {vr.count(removed, 'виконаний план', 'виконані плани', 'виконаних планів')}."
     # all
     _save_notes([])
     log.info(f"Очищено всі плани: {before}")
-    return f"Очистила всі плани, прибрала {before}."
+    return f"Очистила всі плани, прибрала {vr.count(before, 'план', 'плани', 'планів')}."
 
 
 def reminder_loop():
@@ -444,7 +454,9 @@ def reminder_loop():
 # ============================================================
 # Пишемо прямо у файл, а не через REST API плагіна: так працює навіть коли
 # Obsidian закритий, і ключ від API не треба тримати в Ліні.
-BRAIN_VAULT = r"C:\Users\deroy\OneDrive\Документы\memory\memory"
+# Шлях через %USERPROFILE%, без імені користувача; інший шлях можна задати
+# ключем BRAIN_VAULT у config.json
+BRAIN_VAULT = os.path.expandvars(r"%USERPROFILE%\OneDrive\Документы\memory\memory")
 BRAIN_INBOX = os.path.join(BRAIN_VAULT, "Вхідні.md")
 
 # Куди саме класти надиктоване. Ключ — як це називає Влад голосом.
@@ -571,8 +583,8 @@ def _brain_find(query: str, limit: int = 3) -> list:
     #
     # Раніше цей прохід запускався ЛИШЕ коли перший не дав нічого. Через це
     # один слабкий випадковий збіг у метаданих блокував пошук по тілах:
-    # запит «Владислав Грєшних» знаходив нотатку Agentic UX (бо в її summary
-    # є слово «Владислав») і ніколи не доходив до «Люди», де про Грєшних
+    # запит з імʼям і прізвищем колеги знаходив нотатку Agentic UX (бо в її
+    # summary є те саме імʼя) і ніколи не доходив до «Люди», де про колегу
     # власне й написано. Тепер слабкий результат першого проходу не зупиняє,
     # а лише додається до другого.
     body_scored = []
@@ -633,10 +645,8 @@ def brain_ask(question: str) -> None:
                 # й казала «в нотатках нічого немає», хоча тримала перед собою
                 # рівно ті нотатки, які треба.
                 messages=[{"role": "user", "content": (
-                    # Без цього уточнення модель плутала Влада з Владиславом
-                    # Грєшних, колегою з тим самим імʼям, який згадується
-                    # в нотатках як замовник PoC. Обидва Владислави, і модель
-                    # склеювала їх в одну людину.
+                    # Без цього уточнення модель плутала Влада з колегою-тезком,
+                    # який згадується в нотатках, і склеювала їх в одну людину.
                     "«Влад» це Владислав Собакар, власник цих нотаток. Усі інші люди, "
                     "згадані в нотатках, це його колеги й знайомі, а не він сам. "
                     "Ніколи не приписуй йому чужого прізвища.\n\n"
@@ -675,12 +685,14 @@ def load_memory() -> dict:
 
 
 def save_memory(data: dict):
-    with open(MEMORY_PATH, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    _write_json_atomic(MEMORY_PATH, data)
 
 
 def update_memory_after_session(exchanges: list):
     """Зберігає короткий підсумок сесії через Groq."""
+    # Без системного промпту: раніше він (8 тис. символів) ішов у підсумок
+    # разом з розмовою, коли обмінів було мало
+    exchanges = [m for m in exchanges if m.get("role") in ("user", "assistant")]
     if len(exchanges) < 3:
         return
     try:
@@ -755,7 +767,6 @@ def build_system_prompt() -> str:
         "РОЗУМІННЯ: команди приходять голосом, тому текст буває з помилками розпізнавання, "
         "суржиком чи російськими словами — лови НАМІР, а не чіпляйся до формулювання. "
         "Якщо майже зрозуміло — дій; якщо справді незрозуміло — коротко перепитай, не вигадуй. "
-        + memory_block + notes_reminder + brain_block +
         "ДІЇ: коли виконуєш — додай тег [ACTION:тип:параметр] в кінці відповіді. "
         "ЛИШЕ ОДИН тег на відповідь: виконується перший, решта мовчки гине. "
         "НЕ дублюй назву дії звичайним текстом перед тегом — її зачитають уголос. "
@@ -764,7 +775,8 @@ def build_system_prompt() -> str:
         "open_folder:шлях | get_time: | volume_up: | volume_down: | volume_mute: | "
         "screenshot: | type_text:текст | hotkey:комбінація | "
         "close_window: | minimize_all: | focus_window:назва | "
-        "system_lock: | system_sleep: | system_restart: | system_shutdown_pc: | kill_process:назва | "
+        "system_lock: | system_sleep: | system_restart: | system_shutdown_pc: | "
+        "system_cancel_shutdown: — скасувати заплановане вимкнення | kill_process:назва | "
         "spotify_play:запит | spotify_pause: | spotify_next: | spotify_prev: | "
         "spotify_volume_up: | spotify_volume_down: | spotify_volume:N (0-100) | "
         "spotify_shuffle:on/off — перемішування | spotify_repeat:track/context/off — повтор | "
@@ -812,7 +824,8 @@ def build_system_prompt() -> str:
         "monitor_on:gmail/slack/system/all — стежити | monitor_off:... — не стежити | "
         "system_health: — стан системи + помилки журналу | "
         "shutdown:. "
-        "Нагадування: 'о 21:00' → note_remind:текст|21:00; 'через 30 хв' → note_remind:текст|30. "
+        "Нагадування: 'о 21:00' → note_remind:текст|21:00; 'через 30 хв' → note_remind:текст|30; "
+        "'завтра о 9', 'у пʼятницю о 10' → note_remind:текст|РРРР-ММ-ДД ГГ:ХХ (дату порахуй від сьогоднішньої). "
         "Таймер: 'таймер 10 хвилин' → timer:600; 'таймер 30 секунд' → timer:30. "
         "Spotify: 'що грає' — spotify_current:; 'що слухав' — spotify_recent:; 'лайкнуті' — spotify_liked:. "
         "Гучність Spotify: 'гучніше/голосніше в spotify' → spotify_volume_up:; "
@@ -863,8 +876,12 @@ def build_system_prompt() -> str:
         "note_add і note_remind — ТІЛЬКИ коли потрібне нагадування у конкретний "
         "час ('нагадай о 21:00', 'через годину'). Без часу — завжди brain_*. "
         "Слово «плани» саме по собі означає файл Плани у сховищі, а не твій список. "
-        "Якщо дія не потрібна — відповідай без тегу."
-    )
+        "Якщо дія не потрібна — відповідай без тегу. "
+        # Змінне в самому кінці: постійна частина вище однакова в кожному
+        # запиті, і провайдери, що кешують початок промпту, її перевикористають.
+        # Час inject_time() допише ще далі.
+        + brain_block + memory_block + notes_reminder
+    ).rstrip()
 
 
 # ============================================================
@@ -873,6 +890,12 @@ def build_system_prompt() -> str:
 FOCUS_ACTIVE = False
 _tts_lock  = threading.Lock()
 _tts_stop  = threading.Event()   # встановити → зупинити TTS достроково
+# Щоб Рафаель не чув сам себе: listen() не пише, поки щось звучить, і відкидає
+# запис, під час якого почалась озвучка (фонові потоки говорять коли завгодно).
+_tts_active   = threading.Event()   # зараз грає озвучка
+_tts_epoch    = 0                   # лічильник озвучок, росте на кожній
+_tts_last_end = 0.0                 # monotonic-час, коли озвучка востаннє замовкла
+TTS_ECHO_TAIL = 0.35                # стільки секунд після озвучки ще не слухаємо (відлуння)
 pygame.mixer.pre_init(44100, -16, 2, 512)
 pygame.mixer.init()
 
@@ -923,7 +946,7 @@ def morning_briefing(greeting: bool = True):
     pending = [n for n in _load_notes() if not n["done"]]
     if pending:
         count = len(pending)
-        noun  = "план" if count == 1 else "плани" if count < 5 else "планів"
+        noun  = vr.plural(count, "план", "плани", "планів")
         names = ", ".join(n["text"] for n in pending[:3])
         tail  = f" і ще {count - 3}" if count > 3 else ""
         text += f"У тебе {count} {noun}: {names}{tail}. "
@@ -997,12 +1020,16 @@ _file_handler = logging.handlers.RotatingFileHandler(
 _file_handler.setLevel(logging.INFO)
 _file_handler.setFormatter(_fmt)
 
-# Консольний хендлер: WARNING (pythonw — stdout не видно, але нехай)
-_con_handler = logging.StreamHandler()
-_con_handler.setLevel(logging.WARNING)
-_con_handler.setFormatter(_fmt)
+# Консольний хендлер: WARNING, лише коли консоль справді є. Під pythonw
+# stderr веде в crash.log, і туди йдуть тільки падіння, а не кожне попередження.
+_log_handlers = [_file_handler]
+if not _PYTHONW:
+    _con_handler = logging.StreamHandler()
+    _con_handler.setLevel(logging.WARNING)
+    _con_handler.setFormatter(_fmt)
+    _log_handlers.append(_con_handler)
 
-logging.basicConfig(level=logging.DEBUG, handlers=[_file_handler, _con_handler])
+logging.basicConfig(level=logging.DEBUG, handlers=_log_handlers)
 
 # Заглушуємо шумні бібліотеки
 for _noisy in ("PIL", "httpcore", "httpx", "urllib3", "spotipy"):
@@ -1010,7 +1037,13 @@ for _noisy in ("PIL", "httpcore", "httpx", "urllib3", "spotipy"):
 
 log = logging.getLogger("Лін")
 
-client = Groq(api_key=GROQ_API_KEY)
+def _make_groq_client(key: str):
+    """Клієнт для Whisper. Таймаут короткий і без повторів SDK: за замовчуванням
+    це 60 с × 3 спроби на кожну фразу, а за Whisper і так є Google і Vosk."""
+    return Groq(api_key=key, timeout=15.0, max_retries=0)
+
+
+client = _make_groq_client(GROQ_API_KEY)
 recognizer = sr.Recognizer()
 # Баланс швидкість/точність: 0.9с тиші — Лін реагує швидше, але не ріже
 # повільних мовців. Якщо обриває на півслові — підніми до 1.1; якщо реагує
@@ -1033,90 +1066,99 @@ history = [{"role": "system", "content": SYSTEM_PROMPT}]  # оновлюєтьс
 #  ФУНКЦІЇ КЕРУВАННЯ ПК
 # ============================================================
 
+# Шляхи через змінні середовища (%APPDATA%, %LOCALAPPDATA%), а не з іменем
+# користувача: так працює на будь-якому компʼютері і не світить імʼя в репо.
+_P = os.path.expandvars
+CLAUDE_CMD      = _P(r"%APPDATA%\npm\claude.cmd")
+CLAUDE_SESSIONS = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+
+APP_MAP = {
+    # Браузери
+    "браузер":      r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    "хром":         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    "chrome":       r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+    "edge":         "msedge",
+    "microsoft edge": "msedge",
+
+    # Месенджери
+    "spotify":      _P(r"%APPDATA%\Spotify\Spotify.exe"),
+    "спотіфай":     _P(r"%APPDATA%\Spotify\Spotify.exe"),
+    "спотифай":     _P(r"%APPDATA%\Spotify\Spotify.exe"),
+    "музика":       _P(r"%APPDATA%\Spotify\Spotify.exe"),
+    "discord":      _P(r"%LOCALAPPDATA%\Discord\Update.exe --processStart Discord.exe"),
+    "дискорд":      _P(r"%LOCALAPPDATA%\Discord\Update.exe --processStart Discord.exe"),
+    "telegram":     _P(r"%APPDATA%\Telegram Desktop\Telegram.exe"),
+    "телеграм":     _P(r"%APPDATA%\Telegram Desktop\Telegram.exe"),
+
+    # Microsoft Office
+    "ворд":         r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+    "word":         r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
+    "excel":        r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
+    "ексель":       r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
+    "powerpoint":   r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
+    "презентація":  r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
+
+    # Розробка
+    "код":          _P(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
+    "vscode":       _P(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
+    "visual studio": _P(r"%LOCALAPPDATA%\Programs\Microsoft VS Code\Code.exe"),
+    "android studio": r"C:\Program Files\Android\Android Studio\bin\studio64.exe",
+    "xampp":        r"C:\xampp\xampp-control.exe",
+
+    # 3D / Creative
+    "blender":      r"C:\Program Files\Blender Foundation\Blender 4.4\blender.exe",
+    "unity":        r"C:\Program Files\Unity Hub\Unity Hub.exe",
+    "audacity":     r"C:\Program Files\Audacity\Audacity.exe",
+
+    # Ігри
+    "steam":        r"C:\Program Files (x86)\Steam\Steam.exe",
+    "dota":         r"C:\Program Files (x86)\Steam\steamapps\common\dota 2 beta\game\bin\win64\dota2.exe",
+    "elden ring":   r"C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\eldenring.exe",
+    "wallpaper":    r"C:\Program Files (x86)\Steam\steamapps\common\wallpaper_engine\wallpaper32.exe",
+
+    # Системні
+    "блокнот":      "notepad",
+    "notepad":      "notepad",
+    "нотатник":     "notepad",
+    "текстовий":    "notepad",
+    "нотатки":      f'notepad "{NOTES_PATH}"',
+    "мої нотатки":  f'notepad "{NOTES_PATH}"',
+    "плани":        f'notepad "{NOTES_PATH}"',
+    "калькулятор":  "calc",
+    "calculator":   "calc",
+    "провідник":    "explorer",
+    "файли":        "explorer",
+    "paint":        "mspaint",
+    "малювання":    "mspaint",
+    "7zip":         r"C:\Program Files\7-Zip\7zFM.exe",
+    "архіватор":    r"C:\Program Files\7-Zip\7zFM.exe",
+    "razer":        r"C:\Program Files (x86)\Razer\Razer Cortex\RazerCortex.exe",
+
+    # AI / Веб-сервіси
+    "claude":       "https://claude.ai/new",
+    "клод":         "https://claude.ai/new",
+    "claude ai":    "https://claude.ai/new",
+    "claude code":  f'start cmd /k "{CLAUDE_CMD}"',
+    "клод код":     f'start cmd /k "{CLAUDE_CMD}"',
+    "chatgpt":      "https://chatgpt.com",
+    "чатгпт":       "https://chatgpt.com",
+    "gemini":       "https://gemini.google.com",
+    "джемін":       "https://gemini.google.com",
+    "github":       "https://github.com",
+    "гітхаб":       "https://github.com",
+}
+
+
 def open_application(name: str):
-    APP_MAP = {
-        # Браузери
-        "браузер":      r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        "хром":         r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        "chrome":       r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-        "edge":         "msedge",
-        "microsoft edge": "msedge",
-
-        # Месенджери
-        "spotify":      r"C:\Users\deroy\AppData\Roaming\Spotify\Spotify.exe",
-        "спотіфай":     r"C:\Users\deroy\AppData\Roaming\Spotify\Spotify.exe",
-        "спотифай":     r"C:\Users\deroy\AppData\Roaming\Spotify\Spotify.exe",
-        "музика":       r"C:\Users\deroy\AppData\Roaming\Spotify\Spotify.exe",
-        "discord":      r"C:\Users\deroy\AppData\Local\Discord\Update.exe --processStart Discord.exe",
-        "дискорд":      r"C:\Users\deroy\AppData\Local\Discord\Update.exe --processStart Discord.exe",
-        "telegram":     r"C:\Users\deroy\AppData\Roaming\Telegram Desktop\Telegram.exe",
-        "телеграм":     r"C:\Users\deroy\AppData\Roaming\Telegram Desktop\Telegram.exe",
-
-        # Microsoft Office
-        "ворд":         r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
-        "word":         r"C:\Program Files\Microsoft Office\root\Office16\WINWORD.EXE",
-        "excel":        r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
-        "ексель":       r"C:\Program Files\Microsoft Office\root\Office16\EXCEL.EXE",
-        "powerpoint":   r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
-        "презентація":  r"C:\Program Files\Microsoft Office\root\Office16\POWERPNT.EXE",
-
-        # Розробка
-        "код":          r"C:\Users\deroy\AppData\Local\Programs\Microsoft VS Code\Code.exe",
-        "vscode":       r"C:\Users\deroy\AppData\Local\Programs\Microsoft VS Code\Code.exe",
-        "visual studio": r"C:\Users\deroy\AppData\Local\Programs\Microsoft VS Code\Code.exe",
-        "android studio": r"C:\Program Files\Android\Android Studio\bin\studio64.exe",
-        "xampp":        r"C:\xampp\xampp-control.exe",
-
-        # 3D / Creative
-        "blender":      r"C:\Program Files\Blender Foundation\Blender 4.4\blender.exe",
-        "unity":        r"C:\Program Files\Unity Hub\Unity Hub.exe",
-        "audacity":     r"C:\Program Files\Audacity\Audacity.exe",
-
-        # Ігри
-        "steam":        r"C:\Program Files (x86)\Steam\Steam.exe",
-        "dota":         r"C:\Program Files (x86)\Steam\steamapps\common\dota 2 beta\game\bin\win64\dota2.exe",
-        "elden ring":   r"C:\Program Files (x86)\Steam\steamapps\common\ELDEN RING\Game\eldenring.exe",
-        "wallpaper":    r"C:\Program Files (x86)\Steam\steamapps\common\wallpaper_engine\wallpaper32.exe",
-
-        # Системні
-        "блокнот":      "notepad",
-        "notepad":      "notepad",
-        "нотатник":     "notepad",
-        "текстовий":    "notepad",
-        "нотатки":      f'notepad "{NOTES_PATH}"',
-        "мої нотатки":  f'notepad "{NOTES_PATH}"',
-        "плани":        f'notepad "{NOTES_PATH}"',
-        "калькулятор":  "calc",
-        "calculator":   "calc",
-        "провідник":    "explorer",
-        "файли":        "explorer",
-        "paint":        "mspaint",
-        "малювання":    "mspaint",
-        "7zip":         r"C:\Program Files\7-Zip\7zFM.exe",
-        "архіватор":    r"C:\Program Files\7-Zip\7zFM.exe",
-        "razer":        r"C:\Program Files (x86)\Razer\Razer Cortex\RazerCortex.exe",
-
-        # AI / Веб-сервіси
-        "claude":       "https://claude.ai/new",
-        "клод":         "https://claude.ai/new",
-        "claude ai":    "https://claude.ai/new",
-        "claude code":  f'start cmd /k "{CLAUDE_CMD}"',
-        "клод код":     f'start cmd /k "{CLAUDE_CMD}"',
-        "chatgpt":      "https://chatgpt.com",
-        "чатгпт":       "https://chatgpt.com",
-        "gemini":       "https://gemini.google.com",
-        "джемін":       "https://gemini.google.com",
-        "github":       "https://github.com",
-        "гітхаб":       "https://github.com",
-    }
-
     n = name.lower().strip()
 
-    # 1. Точний пошук
-    for key, path in APP_MAP.items():
-        if key in n:
-            _launch(key, path)
-            return
+    # 1. Точний пошук: ключ цілим словом, довші ключі першими. Раніше ключі
+    # перевірялись підрядком у порядку словника, і «клод код» відкривав
+    # VS Code (ключ «код»), а «claude code» сайт (ключ «claude»).
+    key = vr.match_app_key(n, APP_MAP)
+    if key:
+        _launch(key, APP_MAP[key])
+        return
 
     # 2. Fuzzy matching — ловить "спотіфай", "блендер", "дискорд" тощо
     best = difflib.get_close_matches(n, APP_MAP.keys(), n=1, cutoff=0.55)
@@ -1137,12 +1179,22 @@ def open_application(name: str):
             return
 
     log.warning(f"Програму не знайдено: {name}")
+    speak(f"Не знайшла програму «{name}».")
+    _mark_action_failed()
+
+
+def _open_url(url: str):
+    """Chrome, якщо він стоїть там, де очікуємо, інакше браузер за замовчуванням."""
+    if os.path.exists(CHROME_PATH):
+        subprocess.Popen([CHROME_PATH, url])
+    else:
+        os.startfile(url)
 
 
 def _launch(key: str, path: str):
     try:
         if path.startswith("http"):
-            subprocess.Popen([CHROME_PATH, path])
+            _open_url(path)
         elif os.path.exists(path):
             # Реальний файл (часто .exe зі ПРОБІЛАМИ у шляху) — через ShellExecute,
             # БЕЗ shell: інакше cmd ламає шлях на пробілі ("C:\Program" + "Files...").
@@ -1175,21 +1227,51 @@ def volume_control(direction: str):
     log.info(f"Гучність: {direction}")
 
 
+# Системні процеси, які голосом не закриваємо ніколи
+_PROTECTED_PROCS = {
+    "explorer", "svchost", "csrss", "winlogon", "wininit", "lsass", "services",
+    "system", "smss", "dwm", "fontdrvhost", "sihost", "taskhostw", "ctfmon",
+    "runtimebroker", "audiodg", "conhost", "searchhost", "startmenuexperiencehost",
+}
+
+
 def kill_process(name: str) -> int:
+    """
+    Закриває процеси за назвою. Спершу точний збіг («chrome» = chrome.exe),
+    якщо такого немає, то за початком назви.
+
+    Раніше збіг шукався підрядком будь-де, тому порожня назва від моделі
+    («kill_process:») закрила б УСІ процеси користувача, а «e» половину.
+    """
+    target = (name or "").lower().strip()
+    if target.endswith(".exe"):
+        target = target[:-4]
+    if len(target) < 3:
+        log.warning(f"kill_process: назва '{name}' надто коротка, нічого не чіпаю")
+        return 0
+    me = os.getpid()
+    exact, prefix = [], []
+    for proc in psutil.process_iter(["name", "pid"]):
+        pname = (proc.info.get("name") or "").lower()
+        base = pname[:-4] if pname.endswith(".exe") else pname
+        if not base or proc.info.get("pid") == me or base in _PROTECTED_PROCS:
+            continue
+        if base == target:
+            exact.append(proc)
+        elif base.startswith(target):
+            prefix.append(proc)
     killed = 0
-    for proc in psutil.process_iter(['name']):
-        if name.lower() in proc.info['name'].lower():
-            try:
-                proc.kill()
-                killed += 1
-            except Exception:
-                pass
+    for proc in exact or prefix:
+        try:
+            proc.kill()
+            killed += 1
+        except Exception:
+            pass
     log.info(f"Завершено процесів '{name}': {killed}")
     return killed
 
 
-CLAUDE_CMD      = r"C:\Users\deroy\AppData\Roaming\npm\claude.cmd"
-CLAUDE_SESSIONS = os.path.join(os.path.expanduser("~"), ".claude", "projects")
+CLAUDE_TIMEOUT = 120   # секунд на відповідь Claude Code
 
 
 def _ask_claude_code(query: str):
@@ -1206,7 +1288,7 @@ def _ask_claude_code(query: str):
                 [CLAUDE_CMD, "-p", query, "--output-format", "text"],
                 capture_output=True,
                 text=True,
-                timeout=45,
+                timeout=CLAUDE_TIMEOUT,
                 encoding="utf-8",
                 errors="ignore",
             )
@@ -1223,7 +1305,9 @@ def _ask_claude_code(query: str):
                 speak("Клод нічого не відповів.")
 
         except subprocess.TimeoutExpired:
-            speak("Клод думає задовго. Я ще чекаю, але озвучу коли відповість.")
+            # Раніше тут звучало «я ще чекаю, озвучу коли відповість», але
+            # subprocess.run уже вбив процес, і відповіді не було б ніколи
+            speak(f"Клод не встиг відповісти за {CLAUDE_TIMEOUT // 60} хвилини, я зупинила запит.")
         except FileNotFoundError:
             speak("Клод Код не знайдено. Перевір встановлення.")
             log.error(f"claude.cmd не знайдено: {CLAUDE_CMD}")
@@ -1454,7 +1538,7 @@ def _read_claude_session(n_messages: int = 5, keyword: str = "") -> str:
 
 def _ask_claude_web(query: str):
     """Відкриває Claude.ai і вводить запит після завантаження сторінки."""
-    subprocess.Popen([CHROME_PATH, "https://claude.ai/new"])
+    _open_url("https://claude.ai/new")
     log.info(f"Claude відкрито, запит: '{query}'")
     if not query:
         return
@@ -1483,14 +1567,26 @@ _SPOTIPY_CLIENT = None   # кешований клієнт — не створю
 _spotify_lock = threading.Lock()   # серіалізує доступ до токена (без гонок)
 
 
+_spotify_problem = ""   # чому Spotify API зараз недоступний; це й кажемо голосом
+
+
+def _spotify_unavailable_msg() -> str:
+    return _spotify_problem or "Spotify API не налаштований."
+
+
 def _get_spotipy():
     """
-    Повертає авторизований Spotipy клієнт.
-    Токен оновлюється проактивно під замком — НІКОЛИ не доходить до
-    інтерактивного входу (який падав під pythonw з 'lost sys.stdin').
+    Повертає авторизований Spotipy клієнт або None.
+
+    Ніколи не доходить до інтерактивного входу: без придатного токена spotipy
+    сам викликає input(), а під pythonw консолі немає («lost sys.stdin»).
+    Тому токен перевіряємо тут: чи є він, чи має всі дозволи (spotify_common),
+    і оновлюємо проактивно під замком. Причину відмови кладемо в
+    _spotify_problem, щоб сказати голосом, що саме зробити.
     """
-    global _SPOTIPY_CLIENT
+    global _SPOTIPY_CLIENT, _spotify_problem
     if not SPOTIFY_CLIENT_ID or not SPOTIFY_CLIENT_SECRET:
+        _spotify_problem = "Spotify не налаштований: додай ключі в secrets.json."
         return None
     with _spotify_lock:
         try:
@@ -1499,31 +1595,39 @@ def _get_spotipy():
             from spotipy.cache_handler import CacheFileHandler
 
             if _SPOTIPY_CLIENT is None:
-                cache = CacheFileHandler(cache_path=os.path.join(SCRIPT_DIR, ".spotify_token"))
                 auth = SpotifyOAuth(
                     client_id=SPOTIFY_CLIENT_ID,
                     client_secret=SPOTIFY_CLIENT_SECRET,
-                    redirect_uri="http://127.0.0.1:8888/callback",
-                    scope=(
-                        "user-read-playback-state user-modify-playback-state "
-                        "user-read-recently-played user-library-read "
-                        "playlist-read-private playlist-read-collaborative"
-                    ),
-                    cache_handler=cache,
+                    redirect_uri=spotify_common.REDIRECT_URI,
+                    scope=spotify_common.SCOPES,
+                    cache_handler=CacheFileHandler(cache_path=spotify_common.TOKEN_PATH),
                     open_browser=False,   # під pythonw браузер/stdin недоступні
                 )
                 _SPOTIPY_CLIENT = spotipy.Spotify(auth_manager=auth)
                 log.info("Spotipy клієнт ініціалізовано")
 
-            # Проактивне оновлення токена (тихо, через refresh_token)
             am = _SPOTIPY_CLIENT.auth_manager
             tok = am.cache_handler.get_cached_token()
-            if tok and am.is_token_expired(tok):
-                am.refresh_access_token(tok["refresh_token"])
-                log.info("Spotify токен оновлено")
-
+            if not tok:
+                _spotify_problem = "Spotify ще не авторизований. Запусти spotify_auth.bat."
+                log.error("Spotify: токена немає, потрібен spotify_auth.bat")
+                return None
+            if not spotify_common.token_has_scopes(tok):
+                _spotify_problem = "Токену Spotify бракує дозволів. Запусти spotify_auth.bat ще раз."
+                log.error(f"Spotify: у токені не всі дозволи ({tok.get('scope')})")
+                return None
+            if am.is_token_expired(tok):
+                try:
+                    am.refresh_access_token(tok["refresh_token"])
+                    log.info("Spotify токен оновлено")
+                except Exception as e:
+                    _spotify_problem = "Не вдалося оновити токен Spotify. Запусти spotify_auth.bat."
+                    log.error(f"Spotify refresh: {e}")
+                    return None
+            _spotify_problem = ""
             return _SPOTIPY_CLIENT
         except Exception as e:
+            _spotify_problem = "Spotify зараз не відповідає."
             log.error(f"Spotipy init/refresh: {e}")
             return None
 
@@ -1532,7 +1636,7 @@ def _spotify_transfer_device(hint: str):
     """Перемикає відтворення Spotify на пристрій за підказкою (телефон/пк/назва)."""
     sp = _get_spotipy()
     if not sp:
-        speak("Для перемикання пристроїв Spotify потрібно налаштувати API ключі в конфігу.")
+        speak(_spotify_unavailable_msg())
         return
     try:
         devices = sp.devices().get("devices", [])
@@ -1576,21 +1680,28 @@ def _spotify_transfer_device(hint: str):
         speak("Не вдалося перемкнути пристрій.")
 
 
-def _spotify_toggle_playback():
-    """Ставить на паузу або відновлює відтворення через API, fallback — media key."""
+def _spotify_set_playing(want_playing: bool):
+    """
+    Пауза або продовження САМЕ як сказано. Раніше і «пауза», і «грай» були
+    перемикачем: «постав на паузу», коли вже на паузі, вмикало музику.
+    Без API лишається тільки медіа-клавіша, а вона вміє лише перемикати.
+    """
     sp = _get_spotipy()
     if sp:
         try:
             state = sp.current_playback()
-            if state and state.get("is_playing"):
-                sp.pause_playback()
-                log.info("Spotify API: paused")
-            else:
+            playing = bool(state and state.get("is_playing"))
+            if playing == want_playing:
+                log.info(f"Spotify: вже {'грає' if playing else 'на паузі'}, нічого не міняю")
+                return
+            if want_playing:
                 sp.start_playback()
-                log.info("Spotify API: resumed")
+            else:
+                sp.pause_playback()
+            log.info(f"Spotify API: {'resumed' if want_playing else 'paused'}")
             return
         except Exception as e:
-            log.warning(f"Spotify toggle API fail: {e}")
+            log.warning(f"Spotify pause/resume API fail: {e}")
     pyautogui.hotkey("playpause")
     log.info("Spotify: media key playpause")
 
@@ -1599,7 +1710,7 @@ def _spotify_now_playing():
     """Вголос каже що зараз грає."""
     sp = _get_spotipy()
     if not sp:
-        speak("Spotify API не налаштований.")
+        speak(_spotify_unavailable_msg())
         return
     try:
         state = sp.current_playback()
@@ -1623,7 +1734,7 @@ def _spotify_recent(limit: int = 5):
     """Вголос каже нещодавно прослухані треки."""
     sp = _get_spotipy()
     if not sp:
-        speak("Spotify API не налаштований.")
+        speak(_spotify_unavailable_msg())
         return
     try:
         results = sp.current_user_recently_played(limit=limit)
@@ -1653,7 +1764,7 @@ def _spotify_liked(limit: int = 5):
     """Вголос каже кілька лайкнутих треків."""
     sp = _get_spotipy()
     if not sp:
-        speak("Spotify API не налаштований.")
+        speak(_spotify_unavailable_msg())
         return
     try:
         results = sp.current_user_saved_tracks(limit=limit)
@@ -1751,6 +1862,7 @@ def _get_system_info() -> str:
 #  ТАЙМЕР
 # ============================================================
 _active_timers: dict[str, bool] = {}   # id → активний
+_timer_seq = itertools.count(1)
 
 def _timer_start(seconds: int, label: str = ""):
     """Запускає зворотний відлік. По закінченні — звук + голос."""
@@ -1758,16 +1870,18 @@ def _timer_start(seconds: int, label: str = ""):
         speak("Невірний час для таймера.")
         return
 
-    timer_id = f"timer_{time.monotonic():.0f}"
+    # Лічильник, а не секунди: два таймери, запущені в ту саму секунду, мали
+    # один id, і другий по завершенні мовчки зникав
+    timer_id = f"timer_{next(_timer_seq)}"
     _active_timers[timer_id] = True
 
     mins, secs = divmod(seconds, 60)
     if mins and secs:
         time_str = f"{mins} хв {secs} сек"
     elif mins:
-        time_str = f"{mins} {'хвилина' if mins == 1 else 'хвилини' if mins < 5 else 'хвилин'}"
+        time_str = vr.count(mins, "хвилина", "хвилини", "хвилин")
     else:
-        time_str = f"{secs} {'секунда' if secs == 1 else 'секунди' if secs < 5 else 'секунд'}"
+        time_str = vr.count(secs, "секунда", "секунди", "секунд")
 
     name = f"«{label}» — " if label else ""
     log.info(f"Таймер {timer_id}: {time_str}")
@@ -1803,7 +1917,7 @@ def _timer_stop_all():
     for k in list(_active_timers):
         _active_timers[k] = False
     if count:
-        return f"Скасовано {count} таймер{'и' if 1 < count < 5 else 'ів' if count >= 5 else ''}."
+        return f"Скасовано {vr.count(count, 'таймер', 'таймери', 'таймерів')}."
     return "Активних таймерів немає."
 
 
@@ -1943,7 +2057,7 @@ def _spotify_volume(direction: str, value: int = 10) -> None:
     """
     sp = _get_spotipy()
     if not sp:
-        speak("Spotify не налаштований — додай API ключі в конфіг.")
+        speak(_spotify_unavailable_msg())
         return
 
     device_id, current_vol = _spotify_pick_device(sp)
@@ -2004,7 +2118,7 @@ def _spotify_shuffle(enable: bool) -> None:
     """Вмикає або вимикає shuffle через API."""
     sp = _get_spotipy()
     if not sp:
-        speak("Spotify API не налаштований.")
+        speak(_spotify_unavailable_msg())
         return
     try:
         sp.shuffle(enable)
@@ -2023,7 +2137,7 @@ def _spotify_repeat(mode: str) -> None:
     """
     sp = _get_spotipy()
     if not sp:
-        speak("Spotify API не налаштований.")
+        speak(_spotify_unavailable_msg())
         return
     mode_map = {
         "track": "track", "трек": "track", "пісня": "track", "один": "track",
@@ -2045,7 +2159,7 @@ def _spotify_playlists(limit: int = 10) -> None:
     """Вголос перераховує плейлисти користувача."""
     sp = _get_spotipy()
     if not sp:
-        speak("Spotify API не налаштований.")
+        speak(_spotify_unavailable_msg())
         return
     try:
         results = sp.current_user_playlists(limit=limit)
@@ -2065,7 +2179,7 @@ def _spotify_play_playlist(name: str) -> None:
     """Шукає плейлист за назвою і відтворює його."""
     sp = _get_spotipy()
     if not sp:
-        speak("Spotify API не налаштований.")
+        speak(_spotify_unavailable_msg())
         return
     try:
         # Спочатку шукаємо серед власних плейлистів
@@ -2101,7 +2215,7 @@ def _spotify_queue(limit: int = 5) -> None:
     """Показує наступні треки в черзі."""
     sp = _get_spotipy()
     if not sp:
-        speak("Spotify API не налаштований.")
+        speak(_spotify_unavailable_msg())
         return
     try:
         queue_data = sp.queue()
@@ -2128,7 +2242,7 @@ def _spotify_playlist_tracks(name: str) -> None:
     """
     sp = _get_spotipy()
     if not sp:
-        speak("Spotify API не налаштований.")
+        speak(_spotify_unavailable_msg())
         return
     try:
         if not name:
@@ -2180,7 +2294,7 @@ def _spotify_add_to_queue(query: str) -> None:
     """Додає трек в чергу Spotify за назвою."""
     sp = _get_spotipy()
     if not sp:
-        speak("Spotify API не налаштований.")
+        speak(_spotify_unavailable_msg())
         return
     try:
         results = sp.search(q=query, type="track", limit=1)
@@ -2206,7 +2320,7 @@ def _spotify_list_devices():
     """Голосом повідомляє список активних пристроїв Spotify."""
     sp = _get_spotipy()
     if not sp:
-        speak("API ключі Spotify не налаштовані.")
+        speak(_spotify_unavailable_msg())
         return
     try:
         devices = sp.devices().get("devices", [])
@@ -2366,7 +2480,7 @@ def _slack_mentions(limit: int = 5) -> None:
             uname = m.get("username") or "хтось"
             text  = (m.get("text") or "")[:80]
             lines.append(f"{uname}: {text}")
-        speak(f"Тебе згадали {len(matches)} разів: " + "; ".join(lines) + ".")
+        speak(f"Тебе згадали {vr.count(len(matches), 'раз', 'рази', 'разів')}: " + "; ".join(lines) + ".")
         log.info(f"Slack mentions: {len(matches)}")
     except Exception as e:
         log.error(f"Slack mentions: {e}")
@@ -2503,6 +2617,15 @@ def _gmail_box(label: str) -> str:
 _triage_label_cache: dict = {}   # token_path -> {категорія: labelId}
 
 
+def _triage_labels(svc, token_path: str) -> dict:
+    """{категорія: labelId} для скриньки; мітки створюються при першому зверненні."""
+    labels = _triage_label_cache.get(token_path)
+    if labels is None:
+        labels = mail_triage.ensure_labels(svc)
+        _triage_label_cache[token_path] = labels
+    return labels
+
+
 def _gmail_triage(svc, token_path: str, msg_id: str, sender: str, subject: str, box: str):
     """
     Вішає мітку Трекер/* на один лист і прибирає шум із вхідних.
@@ -2515,10 +2638,7 @@ def _gmail_triage(svc, token_path: str, msg_id: str, sender: str, subject: str, 
         return None
     try:
         cat = mail_triage.classify(sender, subject, box)
-        labels = _triage_label_cache.get(token_path)
-        if labels is None:
-            labels = mail_triage.ensure_labels(svc)
-            _triage_label_cache[token_path] = labels
+        labels = _triage_labels(svc, token_path)
         body = {"addLabelIds": [labels[cat]]}
         if cat in mail_triage.ARCHIVE:
             body["removeLabelIds"] = ["INBOX"]
@@ -2584,8 +2704,7 @@ def _gmail_unread(limit: int = 5) -> None:
             if multi:
                 parts.append(f"{label}: {total} від {uniq}")
             else:
-                noun = "непрочитаний" if total == 1 else "непрочитаних"
-                parts.append(f"У тебе {total} {noun}, від {uniq}")
+                parts.append(f"У тебе {vr.count(total, 'непрочитаний лист', 'непрочитані листи', 'непрочитаних листів')}, від {uniq}")
             log.info(f"Gmail unread [{label}]: {total}")
         except Exception as e:
             log.error(f"Gmail unread [{label}]: {e}")
@@ -2667,7 +2786,7 @@ def _gmail_search(query: str, limit: int = 3) -> None:
     if not found:
         speak(f"По запиту «{query}» листів не знайдено.")
         return
-    speak(f"Знайшла {found} листів по «{query}»: " + ". ".join(parts) + ".")
+    speak(f"Знайшла {vr.count(found, 'лист', 'листи', 'листів')} по «{query}»: " + ". ".join(parts) + ".")
 
 
 # ============================================================
@@ -2719,7 +2838,7 @@ def _calendar_agenda(which: str = "today") -> None:
                 except Exception:
                     pass
             lines.append(f"{tstr}{summary}")
-        speak(f"{label} у тебе {len(items)} подій: " + "; ".join(lines) + ".")
+        speak(f"{label} у тебе {vr.count(len(items), 'подія', 'події', 'подій')}: " + "; ".join(lines) + ".")
         log.info(f"Calendar {which}: {len(items)} подій")
     except Exception as e:
         log.error(f"Calendar agenda: {e}")
@@ -2842,24 +2961,29 @@ def _gmail_draft_reply(query: str, reply_text: str) -> None:
     label, svc, msg_id = found
     try:
         import base64
-        from email.mime.text import MIMEText
+        from email.message import EmailMessage
 
         orig = svc.users().messages().get(
             userId="me", id=msg_id, format="metadata",
-            metadataHeaders=["From", "Subject", "Message-ID"]
+            metadataHeaders=["From", "Reply-To", "Subject", "Message-ID", "References"]
         ).execute()
         h = _gmail_headers(orig)
-        to_addr = h.get("From", "")
+        # Відповідаємо туди, куди просить відправник (Reply-To), інакше на From
+        to_addr = h.get("Reply-To") or h.get("From", "")
         subject = h.get("Subject", "")
         msg_id  = h.get("Message-ID", "")
         thread_id = orig.get("threadId")
 
-        mime = MIMEText(reply_text, "plain", "utf-8")
+        # EmailMessage, а не MIMEText: старий API кодував «Іван <ivan@x.com>»
+        # цілком в один шматок, і адреса отримувача губилась, щойно імʼя
+        # було кирилицею чи з литовськими літерами.
+        mime = EmailMessage()
         mime["To"] = to_addr
         mime["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
         if msg_id:
             mime["In-Reply-To"] = msg_id
-            mime["References"]  = msg_id
+            mime["References"]  = f"{h.get('References', '')} {msg_id}".strip()
+        mime.set_content(reply_text)
         raw = base64.urlsafe_b64encode(mime.as_bytes()).decode()
 
         svc.users().drafts().create(
@@ -2905,6 +3029,7 @@ def _screen_look(question: str = "") -> None:
         prompt += " Відповідай ТІЛЬКИ українською, без англійської."
         resp = llm_chat(
             VISION_MODEL,
+            fallback=False,          # резервна gpt-oss на Groq картинок не бачить
             messages=[{"role": "user", "content": [
                 {"type": "text", "text": prompt},
                 {"type": "image_url",
@@ -2932,12 +3057,23 @@ def _gmail_check_new() -> list:
         return []
     multi = len(accounts) > 1
     new_items = []
+    listed = set()        # ключі листів, які зараз лежать у непрочитаних вхідних
+    ok_accounts = set()   # скриньки, які цього разу вдалося перевірити
     try:
         for label, svc in accounts:
             try:
                 box = _gmail_box(label)
                 token_path = next((a["token"] for a in GMAIL_ACCOUNTS
                                    if a["label"] == label), label)
+                # Мітки Трекер/* і є памʼяттю монітора: лист із такою міткою вже
+                # розкладено (у минулому проході чи до перезапуску) і, якщо він
+                # того вартий, уже оголошено. Памʼять у RAM цього не переживала.
+                processed = set()
+                if MAIL_TRIAGE_ENABLED and mail_triage:
+                    try:
+                        processed = set(_triage_labels(svc, token_path).values())
+                    except Exception as e:
+                        log.error(f"Мітки Трекер [{label}]: {e}")
                 # 40, а не 10: сортувальник має встигати за напливом розсилок,
                 # інакше вхідні знову заростуть між перевірками
                 res = svc.users().messages().list(
@@ -2946,6 +3082,7 @@ def _gmail_check_new() -> list:
                 msgs = res.get("messages", [])
                 for m in msgs:
                     key = f"{label}:{m['id']}"   # унікальний ключ на акаунт
+                    listed.add(key)
                     if key in _seen_gmail_ids:
                         continue
                     _seen_gmail_ids[key] = True
@@ -2953,6 +3090,8 @@ def _gmail_check_new() -> list:
                         userId="me", id=m["id"], format="metadata",
                         metadataHeaders=["From", "Subject"]
                     ).execute()
+                    if processed & set(full.get("labelIds", [])):
+                        continue                  # уже розкладений раніше
                     h = _gmail_headers(full)
                     raw_from = h.get("From", "невідомо")
                     subject  = h.get("Subject", "без теми")
@@ -2972,13 +3111,14 @@ def _gmail_check_new() -> list:
                     if cat:
                         sender = f"{sender}, {cat}"
                     new_items.append((m["id"], sender, subject))
+                ok_accounts.add(label)
             except Exception as e:
                 log.error(f"Gmail monitor [{label}]: {e}")
-        # Обмежуємо ріст. Раніше тут був повний clear(), через що після 400 листів
-        # Рафаель забував усе і оголошував старі листи вдруге. Тепер викидаємо
-        # найдавнішу половину, а 200 найсвіжіших ключів лишаються.
-        if len(_seen_gmail_ids) > 400:
-            for key in list(_seen_gmail_ids)[:-200]:
+        # Забуваємо лише листи, яких уже немає в непрочитаних вхідних (прочитані,
+        # заархівовані). Раніше при переповненні викидались НАЙСТАРІШІ ключі,
+        # тобто якраз важливі непрочитані, і їх оголошувало вдруге як нові.
+        for key in list(_seen_gmail_ids):
+            if key.rsplit(":", 1)[0] in ok_accounts and key not in listed:
                 del _seen_gmail_ids[key]
         return new_items
     except Exception as e:
@@ -3014,7 +3154,7 @@ def _slack_check_new() -> list:
 
 def _monitor_toggle(target: str, on: bool) -> None:
     """Вмикає/вимикає монітор пошти, слаку або системи."""
-    global _MONITOR, SYS_MONITOR_ENABLED
+    global SYS_MONITOR_ENABLED
     target = target.lower().strip()
 
     # Система — окремий прапорець
@@ -3068,15 +3208,22 @@ def monitor_loop():
             # ── Gmail ──
             if _MONITOR["gmail"]:
                 new_mail = _gmail_check_new()
-                if not _monitor_primed["gmail"]:
-                    _monitor_primed["gmail"] = True   # перший прохід — лише запам'ятати
+                first_pass = not _monitor_primed["gmail"]
+                _monitor_primed["gmail"] = True
+                if first_pass and not (MAIL_TRIAGE_ENABLED and mail_triage):
+                    # Без міток памʼяті між запусками немає: перший прохід лише
+                    # запамʼятовує, щоб не зачитати всі старі непрочитані.
+                    # З мітками нерозкладене на старті справді нове (прийшло,
+                    # поки компʼютер був вимкнений), і про нього варто сказати.
+                    pass
                 elif new_mail:
                     if len(new_mail) == 1:
                         _, sender, subj = new_mail[0]
                         speak(f"Новий лист від {sender}: «{subj}».")
                     else:
                         senders = ", ".join(s for _, s, _ in new_mail[:3])
-                        speak(f"{len(new_mail)} нових листів, зокрема від {senders}.")
+                        speak(f"{vr.count(len(new_mail), 'новий лист', 'нові листи', 'нових листів')}, "
+                              f"зокрема від {senders}.")
 
             # ── Slack ──
             if _MONITOR["slack"]:
@@ -3257,7 +3404,8 @@ def sys_monitor_loop():
                     ev = next((e for e in events if e[1].lower() in ("critical", "критичний")), events[0])
                     provider, level, msg = ev
                     human = _describe_event(provider, msg)
-                    extra = f" Ще {len(events)-1} подій у журналі." if len(events) > 1 else ""
+                    extra = (f" Ще {vr.count(len(events) - 1, 'подія', 'події', 'подій')} у журналі."
+                             if len(events) > 1 else "")
                     _sys_alert(f"event_{provider.lower()}", f"Системне сповіщення: {human}{extra}")
         except Exception as e:
             log.error(f"System monitor помилка: {e}")
@@ -3296,13 +3444,35 @@ def _system_health_report() -> str:
         )
         cnt = (result.stdout or "0").strip()
         if cnt.isdigit() and int(cnt) > 0:
-            status += f". За останні пів години в журналі {cnt} помилок"
+            status += f". За останні пів години в журналі {vr.count(int(cnt), 'помилка', 'помилки', 'помилок')}"
         else:
             status += ". Помилок у журналі немає"
     except Exception as e:
         log.debug(f"Health report events: {e}")
 
     return status + "."
+
+
+SHUTDOWN_DELAY = 30   # секунд до вимкнення/ребуту: час передумати
+
+# Дія, що сама сказала про невдачу («Не знайшла програму»), ставить прапорець,
+# і ask_lin тоді не зачитує текст моделі («Відкриваю…»): він був би неправдою.
+_action_failed = threading.Event()
+
+
+def _mark_action_failed():
+    _action_failed.set()
+
+
+def _cancel_shutdown():
+    """shutdown /a і чесна відповідь, чи було що скасовувати."""
+    try:
+        r = subprocess.run(["shutdown", "/a"], capture_output=True, text=True, timeout=10)
+        speak("Скасувала вимкнення." if r.returncode == 0 else
+              "Вимкнення не було заплановане.")
+    except Exception as e:
+        log.error(f"shutdown /a: {e}")
+        speak("Не вийшло скасувати. Набери shutdown /a вручну.")
 
 
 def execute_action(action_str: str):
@@ -3314,16 +3484,18 @@ def execute_action(action_str: str):
 
         if   t == "open_app":          open_application(p)
         elif t == "search_web":
-            url = f"https://www.google.com/search?q={p.replace(' ', '+')}"
-            subprocess.Popen([CHROME_PATH, url])
+            # quote_plus: без нього «C# tutorial» Google отримував як «C»
+            url = f"https://www.google.com/search?q={urllib.parse.quote_plus(p)}"
+            _open_url(url)
             log.info(f"Chrome search: {url}")
         elif t == "open_youtube":
-            url = f"https://www.youtube.com/results?search_query={p.replace(' ', '+')}" if p else "https://youtube.com"
-            subprocess.Popen([CHROME_PATH, url])
+            url = (f"https://www.youtube.com/results?search_query={urllib.parse.quote_plus(p)}"
+                   if p else "https://youtube.com")
+            _open_url(url)
             log.info(f"Chrome YouTube: {url}")
         elif t == "open_url":
             url = p if p.startswith("http") else f"https://{p}"
-            subprocess.Popen([CHROME_PATH, url])
+            _open_url(url)
             log.info(f"Chrome URL: {url}")
         elif t == "open_folder":
             folder_aliases = {
@@ -3407,9 +3579,21 @@ def execute_action(action_str: str):
                 "Add-Type -Assembly System.Windows.Forms; "
                 "[System.Windows.Forms.Application]::SetSuspendState("
                 "[System.Windows.Forms.PowerState]::Suspend, $false, $false)"])
-        elif t == "system_restart":    subprocess.Popen(["shutdown", "/r", "/t", "5"])
-        elif t == "system_shutdown_pc":subprocess.Popen(["shutdown", "/s", "/t", "5"])
-        elif t == "kill_process":      kill_process(p)
+        # Вимкнення і ребут: після підтвердження в ask_lin і з запасом у 30 с,
+        # за які можна сказати «скасуй вимкнення» (shutdown /a).
+        elif t == "system_restart":
+            subprocess.Popen(["shutdown", "/r", "/t", str(SHUTDOWN_DELAY)])
+            speak(f"Перезавантажую через {SHUTDOWN_DELAY} секунд. Скажи «скасуй вимкнення», щоб зупинити.")
+        elif t == "system_shutdown_pc":
+            subprocess.Popen(["shutdown", "/s", "/t", str(SHUTDOWN_DELAY)])
+            speak(f"Вимикаю через {SHUTDOWN_DELAY} секунд. Скажи «скасуй вимкнення», щоб зупинити.")
+        elif t == "system_cancel_shutdown":
+            _cancel_shutdown()
+        elif t == "kill_process":
+            n = kill_process(p)
+            speak(f"Закрила {p}." if n == 1 else
+                  f"Закрила {p}: {vr.count(n, 'процес', 'процеси', 'процесів')}." if n else
+                  f"Не знайшла процес «{p}».")
 
         # ── SPOTIFY ──
         elif t == "spotify_play":
@@ -3432,14 +3616,17 @@ def execute_action(action_str: str):
                             return
                 if not played:
                     # Fallback: URI схема
-                    uri = "spotify:search:" + p.replace(" ", "+")
+                    uri = "spotify:search:" + urllib.parse.quote(p)
                     os.startfile(uri)   # без shell — ShellExecute по протоколу spotify:
                     log.info(f"Spotify URI fallback: {uri}")
             else:
-                _spotify_toggle_playback()
+                _spotify_set_playing(True)      # «грай» без назви = продовжити
 
         elif t == "spotify_pause":
-            _spotify_toggle_playback()
+            _spotify_set_playing(False)
+
+        elif t == "spotify_resume":
+            _spotify_set_playing(True)
 
         elif t == "spotify_next":
             sp = _get_spotipy()
@@ -3462,7 +3649,7 @@ def execute_action(action_str: str):
                 pyautogui.hotkey("prevtrack")
 
         elif t == "spotify_stop":
-            _spotify_toggle_playback()
+            _spotify_set_playing(False)
 
         elif t == "spotify_device":
             _spotify_transfer_device(p)
@@ -3551,7 +3738,8 @@ def execute_action(action_str: str):
             return result
 
         elif t == "note_remind":
-            # формат: "текст|30"  (хвилини) АБО "текст|21:00" (абсолютний час)
+            # формат: "текст|30" (хвилини), "текст|21:00" (сьогодні/завтра)
+            # або "текст|2026-09-26 09:00" (конкретна дата)
             parts_n = p.split("|", 1)
             txt = parts_n[0].strip()
             time_val = parts_n[1].strip() if len(parts_n) > 1 else "30"
@@ -3964,53 +4152,113 @@ def _strip_md(text: str) -> str:
     return text.strip()
 
 
+# ── Кеш коротких фраз ─────────────────────────────────────────────────────────
+# «Слухаю.», «Скасовую.», привітання звучать десятки разів на день, і щоразу
+# чекати синтез edge-tts (запит у мережу) немає сенсу. Короткі фрази лежать
+# готовими mp3. Тека поза проєктом, щоб не синхронізувалась в OneDrive.
+TTS_CACHE_DIR       = os.path.join(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(),
+                                   "raphael-tts-cache")
+TTS_CACHE_MAX_CHARS = 80
+TTS_CACHE_MAX_FILES = 400
+
+
+def _tts_cache_path(text: str) -> str | None:
+    if len(text) > TTS_CACHE_MAX_CHARS:
+        return None
+    key = hashlib.sha1(f"{VOICE}|{VOICE_RATE}|{VOICE_PITCH}|{text}".encode("utf-8")).hexdigest()
+    return os.path.join(TTS_CACHE_DIR, key + ".mp3")
+
+
+def _tts_cache_trim():
+    """Лишає TTS_CACHE_MAX_FILES найсвіжіших файлів (за часом останнього використання)."""
+    try:
+        files = [os.path.join(TTS_CACHE_DIR, f) for f in os.listdir(TTS_CACHE_DIR)
+                 if f.endswith(".mp3")]
+        if len(files) <= TTS_CACHE_MAX_FILES:
+            return
+        files.sort(key=os.path.getmtime)
+        for p in files[:len(files) - TTS_CACHE_MAX_FILES + 50]:
+            os.remove(p)
+    except Exception as e:
+        log.debug(f"TTS кеш: {e}")
+
+
+def _tts_synth_to(path: str, text: str):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(edge_tts.Communicate(
+            text, voice=VOICE, rate=VOICE_RATE, pitch=VOICE_PITCH).save(path))
+    finally:
+        loop.close()
+
+
+def _tts_play(path: str):
+    if not pygame.mixer.get_init():
+        pygame.mixer.init()
+    pygame.mixer.music.load(path)
+    pygame.mixer.music.play()
+    clock = pygame.time.Clock()
+    while pygame.mixer.music.get_busy():
+        if _tts_stop.is_set():
+            pygame.mixer.music.stop()
+            log.debug("TTS: зупинено користувачем")
+            break
+        clock.tick(10)
+    pygame.mixer.music.unload()
+
+
 def speak(text: str):
+    global _last_spoken, _tts_epoch, _tts_last_end
     if not text or not text.strip():
         return
     text = _strip_md(text)
     if not text:
         return
-    async def _speak():
-        tts = edge_tts.Communicate(text, voice=VOICE, rate=VOICE_RATE, pitch=VOICE_PITCH)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as f:
-            path = f.name
-        await tts.save(path)
-        if not pygame.mixer.get_init():
-            pygame.mixer.init()
-        pygame.mixer.music.load(path)
-        pygame.mixer.music.play()
-        while pygame.mixer.music.get_busy():
-            if _tts_stop.is_set():
-                pygame.mixer.music.stop()
-                log.debug("TTS: зупинено користувачем")
-                break
-            pygame.time.Clock().tick(10)
-        pygame.mixer.music.unload()
-        try:
-            os.unlink(path)
-        except Exception:
-            pass
 
-    global _last_spoken
     _last_spoken = text   # зберігаємо для "повтори"
     log.debug(f"TTS: '{text[:50]}...' " if len(text) > 50 else f"TTS: '{text}'")
     _tts_stop.clear()
     if LIN_UI:
         LIN_UI.safe_set_state("speaking", text)
     with _tts_lock:  # один потік говорить за раз
+        _tts_epoch += 1
+        _tts_active.set()
+        tmp = None
         try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            loop.run_until_complete(_speak())
+            cached = _tts_cache_path(text)
+            if cached and os.path.exists(cached):
+                path = cached
+                try:
+                    os.utime(cached, None)          # свіжий для _tts_cache_trim
+                except Exception:
+                    pass
+            elif cached:
+                os.makedirs(TTS_CACHE_DIR, exist_ok=True)
+                tmp = cached + ".part"              # недописаний файл не потрапить у кеш
+                _tts_synth_to(tmp, text)
+                os.replace(tmp, cached)
+                path, tmp = cached, None
+                _tts_cache_trim()
+            else:
+                fd, tmp = tempfile.mkstemp(suffix=".mp3")
+                os.close(fd)
+                _tts_synth_to(tmp, text)
+                path = tmp
+            _tts_play(path)
             log.debug("TTS: завершено")
         except Exception as e:
             log.error(f"TTS помилка: {e}", exc_info=True)
         finally:
-            loop.close()
+            if tmp:
+                try:
+                    os.unlink(tmp)
+                except Exception:
+                    pass
+            _tts_last_end = time.monotonic()
+            _tts_active.clear()
     if LIN_UI:
         LIN_UI.safe_set_state("idle")
-    if not _tts_stop.is_set():
-        time.sleep(0.25)  # коротка пауза щоб мікрофон не підхопив відлуння
 
 
 # ============================================================
@@ -4172,43 +4420,102 @@ def _transcribe_vosk(audio) -> str:
         return ""
 
 
+# Експериментальний локальний фільтр імені (вимкнено за замовчуванням, вмикається
+# в config.json). У normal-режимі кожна почута поруч фраза (телевізор, музика,
+# дзвінок) іде в Groq Whisper, хоча потрібні лише ті, де є імʼя. З фільтром
+# спершу Vosk НА ЦЬОМУ компʼютері перевіряє, чи схоже, що звернулись до Рафаеля,
+# і тільки тоді аудіо летить у хмару. Без моделі Vosk фільтр нічого не блокує.
+LOCAL_WAKE_GATE = False
+
+
+def _vosk_heard_wake(audio) -> bool:
+    model = _get_vosk_model()
+    if not model:
+        return True
+    try:
+        from vosk import KaldiRecognizer
+        rec = KaldiRecognizer(model, 16000)
+        rec.AcceptWaveform(audio.get_raw_data(convert_rate=16000, convert_width=2))
+        heard = (json.loads(rec.FinalResult()).get("text") or "").strip().lower()
+    except Exception as e:
+        log.debug(f"Wake-фільтр Vosk: {e}")
+        return True                       # фільтр зламався: краще пропустити, ніж оглухнути
+    words = heard.split()
+    edge = words[:vr.WAKE_MAX_POSITION] + words[-1:]
+    ok = bool(vr.find_wake(heard, WAKE_WORDS)) or any(
+        difflib.get_close_matches(w, WAKE_WORDS, n=1, cutoff=0.75) for w in edge)
+    log.debug(f"Wake-фільтр Vosk: '{heard}' → {'пропускаю в Whisper' if ok else 'не імʼя'}")
+    return ok
+
+
+def _wait_tts_quiet():
+    """Чекає, доки замовкне озвучка (плюс хвіст на відлуння кімнати)."""
+    while _tts_active.is_set() or time.monotonic() - _tts_last_end < TTS_ECHO_TAIL:
+        time.sleep(0.05)
+
+
 _mic_calibrated = False   # калібруємо мікрофон лише раз
 
-def listen(timeout=30, phrase_limit=20) -> str:
+def listen(timeout=30, phrase_limit=20, passive=False, wake_gate=False) -> str:
+    """
+    Слухає одну фразу і повертає текст ("" якщо тиша чи не розпізнано).
+
+    Поки говорить сам Рафаель, мікрофон не пише, а запис, під час якого
+    почалась озвучка з фонового потоку (новий лист, таймер, нагадування),
+    викидається. Інакше він чув сам себе, а тему листа «Рафаель, вимкни
+    компʼютер» сприймав би як команду.
+
+    passive=True: фонове слухання в normal-режимі, коли чекаємо імʼя. Стан
+    вікна не змінюємо: «Слухаю» світиться лише тоді, коли Рафаель справді
+    чекає команду, і на екран не виводиться все, що сказали поруч.
+    wake_gate=True: з LOCAL_WAKE_GATE фраза без імені відкидається локально.
+    """
     global _mic_calibrated
-    if LIN_UI:
+    show = bool(LIN_UI) and not passive
+    if show:
         LIN_UI.safe_set_state("listening")
     try:
-        with sr.Microphone() as source:
-            # Калібрування лише першого разу — далі dynamic_energy_threshold
-            # сам підлаштовується. Це прибирає ~150мс затримки на кожній команді.
-            if not _mic_calibrated:
-                recognizer.adjust_for_ambient_noise(source, duration=0.5)
-                _mic_calibrated = True
-            try:
-                audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_limit)
-            except sr.WaitTimeoutError:
-                log.debug("STT: тайм-аут")
-                if LIN_UI: LIN_UI.safe_set_state("idle")
-                return ""
+        while True:
+            _wait_tts_quiet()
+            epoch = _tts_epoch
+            with sr.Microphone() as source:
+                # Калібрування лише першого разу — далі dynamic_energy_threshold
+                # сам підлаштовується. Це прибирає ~150мс затримки на кожній команді.
+                if not _mic_calibrated:
+                    recognizer.adjust_for_ambient_noise(source, duration=0.5)
+                    _mic_calibrated = True
+                try:
+                    audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_limit)
+                except sr.WaitTimeoutError:
+                    log.debug("STT: тайм-аут")
+                    if show: LIN_UI.safe_set_state("idle")
+                    return ""
+            if _tts_active.is_set() or _tts_epoch != epoch:
+                log.debug("STT: запис наклався на озвучку, відкидаю і слухаю знову")
+                continue
+            break
 
-            # Whisper (найкраще) → Google → Vosk (офлайн, коли немає інтернету)
-            text = (_transcribe_whisper(audio)
-                    or _transcribe_google(audio)
-                    or _transcribe_vosk(audio))
+        if wake_gate and LOCAL_WAKE_GATE and not _vosk_heard_wake(audio):
+            return ""
 
-            if not text:
-                log.debug("STT: не розпізнано")
-                if LIN_UI: LIN_UI.safe_set_state("idle")
-                return ""
+        # Whisper (найкраще) → Google → Vosk (офлайн, коли немає інтернету)
+        text = (_transcribe_whisper(audio)
+                or _transcribe_google(audio)
+                or _transcribe_vosk(audio))
 
-            if LIN_UI:
-                LIN_UI.safe_set_state("thinking", text)
-            return text
+        if not text:
+            log.debug("STT: не розпізнано")
+            if show: LIN_UI.safe_set_state("idle")
+            return ""
+
+        if show:
+            LIN_UI.safe_set_state("thinking", text)
+        return text
 
     except Exception as e:
         log.error(f"listen() помилка: {e}", exc_info=True)
-        if LIN_UI: LIN_UI.safe_set_state("idle")
+        if show: LIN_UI.safe_set_state("idle")
+        time.sleep(1)   # без мікрофона цикл інакше крутився б без паузи, забиваючи лог
         return ""
 
 
@@ -4271,6 +4578,12 @@ LLM_PROVIDERS = {
 _llm_clients = {}
 
 
+# Таймаут одного запиту до моделі. Повтори SDK вимкнені (max_retries=0): за
+# замовчуванням openai робить ще 2 спроби, і на мертвому провайдері це до
+# півтори хвилини тиші. Швидше одразу піти на резервного провайдера.
+LLM_TIMEOUT = 20
+
+
 def _llm(model: str):
     """('провайдер:модель') → (клієнт, чиста назва моделі)."""
     prov, sep, bare = (model or "").partition(":")
@@ -4281,18 +4594,65 @@ def _llm(model: str):
     if cli is None:
         from openai import OpenAI
         key = _secret(cfg["key_name"]) if cfg.get("key_name") else ""
+        if cfg.get("key_name") and not key:
+            log.warning(f"{cfg['key_name']} не задано (secrets.json або змінна середовища): "
+                        f"запити до {prov} не пройдуть, працюватиме лише резерв")
         cli = OpenAI(api_key=key or cfg.get("key_default", "none"),
-                     base_url=cfg["base_url"], timeout=30)
+                     base_url=cfg["base_url"], timeout=LLM_TIMEOUT, max_retries=0)
         _llm_clients[prov] = cli
         log.info(f"LLM-провайдер піднято: {prov}")
     return cli, bare
 
 
-def llm_chat(model: str, messages, **kw):
-    """Єдина точка виклику моделі. Сама підставляє параметри під провайдера."""
+class LLMUnavailable(Exception):
+    """Не відповіла ні основна модель, ні резервна. errors: [(модель, помилка)]."""
+    def __init__(self, errors):
+        super().__init__("; ".join(f"{m}: {e}" for m, e in errors))
+        self.errors = errors
+
+    @property
+    def rate_limited(self) -> bool:
+        return all(_is_rate_limit(e) for _, e in self.errors)
+
+
+def _is_rate_limit(e) -> bool:
+    s = str(e).lower()
+    return "429" in s or "rate_limit" in s or "rate limit" in s or "quota" in s
+
+
+def _fallback_for(model: str) -> str:
+    """Резерв за замовчуванням: інша модель пари основна/резервна."""
+    return GROQ_FALLBACK_MODEL if model == GROQ_PRIMARY_MODEL else GROQ_PRIMARY_MODEL
+
+
+def _llm_call(model: str, messages, **kw):
     cli, bare = _llm(model)
     return cli.chat.completions.create(model=bare, messages=messages,
                                        **_model_kwargs(bare), **kw)
+
+
+def llm_chat(model: str, messages, fallback=None, **kw):
+    """
+    Єдина точка виклику моделі. Сама підставляє параметри під провайдера.
+
+    Якщо модель не відповіла з БУДЬ-ЯКОЇ причини (429, таймаут, 5xx, обрив
+    мережі, модель прибрали), питаємо резервну на іншому провайдері.
+    fallback: None → автоматично інша модель пари основна/резервна;
+              False → без резерву (зір: на Groq моделей із зображеннями немає).
+    Якщо не відповіла жодна, кидає LLMUnavailable.
+    """
+    try:
+        return _llm_call(model, messages, **kw)
+    except Exception as e:
+        alt = _fallback_for(model) if fallback is None else fallback
+        if not alt or alt == model:
+            raise LLMUnavailable([(model, e)]) from e
+        log.warning(f"LLM {model} не відповіла ({type(e).__name__}: {str(e)[:150]}), пробую {alt}")
+        try:
+            return _llm_call(alt, messages, **kw)
+        except Exception as e2:
+            log.error(f"LLM резерв {alt} теж не відповів: {type(e2).__name__}: {str(e2)[:150]}")
+            raise LLMUnavailable([(model, e), (alt, e2)]) from e2
 
 
 # Розбір тега дії. Терпимий до пробілів і регістру: gpt-oss інколи пише
@@ -4354,18 +4714,50 @@ def _model_kwargs(model: str) -> dict:
     return {}
 
 
+# Окрема модель для коротких команд. Порожньо = усе йде на основну.
+FAST_MODEL = ""
+
+
 def _choose_model(text: str) -> str:
     """
-    Турбо-маршрутизація: короткі чіткі команди → швидка 8b,
-    розмова/складні питання → точна 70b.
-    Теми з _FORCE_PRIMARY завжди йдуть на 70b, навіть якщо фраза коротка.
+    Яку модель питати першою.
+
+    Раніше короткі команди йшли на «швидку llama-8b», але після переходу на
+    gpt-oss і Gemini там опинилась gemini-3.1-flash-lite з найменшою квотою
+    (500 на день, 15 за хвилину, і її ж їсть зір). Тепер усе йде на основну
+    модель, резерв лише на помилку. Щоб повернути окрему модель для коротких
+    команд, задай FAST_MODEL у config.json. Теми з _FORCE_PRIMARY туди не
+    потрапляють ніколи.
     """
     t = text.lower()
-    if any(h in t for h in _FORCE_PRIMARY):
-        return GROQ_PRIMARY_MODEL
-    if len(t.split()) <= 6 and any(h in t for h in _COMMAND_HINTS):
-        return GROQ_FALLBACK_MODEL   # llama-3.1-8b-instant (швидша)
-    return GROQ_PRIMARY_MODEL        # llama-3.3-70b-versatile (точніша)
+    if (FAST_MODEL and not any(h in t for h in _FORCE_PRIMARY)
+            and len(t.split()) <= 6 and any(h in t for h in _COMMAND_HINTS)):
+        return FAST_MODEL
+    return GROQ_PRIMARY_MODEL
+
+
+# Відповідь на підтвердження: дія лише на ЧІТКЕ «так» без «ні», мовчання = ні
+_YES_WORDS = {"так", "ага", "угу", "давай", "ок", "окей", "добре", "звичайно",
+              "канєшно", "конєшно", "ясно", "поїхали", "жени", "да", "yes", "go"}
+_NO_WORDS  = {"ні", "нє", "нєа", "відміна", "скасуй", "стоп", "нет", "no", "не"}
+
+
+def _confirm(question: str, extra_yes=()) -> bool:
+    speak(question)
+    ans = listen(timeout=8, phrase_limit=5) or ""
+    words = set(re.sub(r"[^\w\s']", " ", ans.lower()).split())
+    ok = bool(words & (_YES_WORDS | set(extra_yes))) and not (words & _NO_WORDS)
+    log.info(f"Підтвердження «{question}»: '{ans}' → {'так' if ok else 'ні'}")
+    return ok
+
+
+# Незворотні дії → (питання, додаткові слова згоди)
+_MUST_CONFIRM = {
+    "system_shutdown_pc": ("Вимкнути компʼютер? Скажи так або ні.", ("вимикай",)),
+    "system_restart":     ("Перезавантажити компʼютер? Скажи так або ні.", ("перезавантажуй",)),
+    "kill_process":       ("Закрити «{p}»? Скажи так або ні.", ("закривай", "вбивай")),
+    "note_clear":         ("Стерти всі плани? Скажи так або ні.", ("стирай", "видаляй")),
+}
 
 
 def ask_lin(user_input: str) -> str:
@@ -4377,43 +4769,38 @@ def ask_lin(user_input: str) -> str:
     if len(history) > 11:
         history[1:] = history[-10:]
 
-    def _call_groq(model: str):
-        return llm_chat(
-            model,
+    # Основна модель, а резервна (інший провайдер) на БУДЬ-ЯКУ помилку:
+    # 429, таймаут, 5xx, обрив мережі. Раніше резерв вмикався лише на 429.
+    primary = _choose_model(user_input)
+    secondary = GROQ_FALLBACK_MODEL if primary == GROQ_PRIMARY_MODEL else GROQ_PRIMARY_MODEL
+    log.info(f"Модель: {primary}")
+    try:
+        response = llm_chat(
+            primary,
             messages=inject_time(history),
+            fallback=secondary,
             # 180 було замало: міркувальні моделі частину ліміту витрачають на
-            # думання і відповідь обривається. Сама відповідь однаково коротка —
+            # думання і відповідь обривається. Сама відповідь однаково коротка:
             # модель зупиняється сама, зайвий ліміт нічого не коштує.
             max_tokens=700,
             temperature=0.7,
         )
-
-    # Турбо: обираємо модель під тип запиту; інша — резерв на випадок 429
-    primary = _choose_model(user_input)
-    secondary = GROQ_PRIMARY_MODEL if primary == GROQ_FALLBACK_MODEL else GROQ_FALLBACK_MODEL
-    log.info(f"Модель: {primary.split('-')[1] if '-' in primary else primary}")
-
-    try:
-        response = _call_groq(primary)
-    except Exception as e:
-        err = str(e)
-        if "429" in err or "rate_limit" in err.lower():
-            log.warning(f"Groq {primary} rate limit — пробую {secondary}")
-            try:
-                response = _call_groq(secondary)
-            except Exception as e2:
-                if "429" in str(e2) or "rate_limit" in str(e2).lower():
-                    speak("Денний ліміт запитів вичерпано. Спробуй через кілька хвилин.")
-                    log.error(f"Groq обидві моделі 429: {e2}")
-                    return ""
-                log.error(f"Groq fallback помилка: {e2}")
-                raise e2
+    except LLMUnavailable as e:
+        history.pop()          # запит без відповіді не лишаємо в історії
+        if e.rate_limited:
+            speak("Денний ліміт запитів вичерпано. Спробуй через кілька хвилин.")
         else:
-            log.error(f"Groq API помилка: {e}")
-            raise
+            speak("Моделі зараз не відповідають. Перевір інтернет або спробуй за хвилину.")
+        return ""
 
-    reply = response.choices[0].message.content
+    # content буває None чи порожнім (міркувальна модель витратила весь ліміт
+    # на думання). Такого не можна класти в історію: наступний запит з
+    # assistant-повідомленням без тексту провайдер може відхилити.
+    reply = (response.choices[0].message.content or "").strip()
     log.info(f"Відповідь: '{reply}'")
+    if not reply:
+        history.pop()
+        return "Хм, загубила думку. Повтори, будь ласка."
     history.append({"role": "assistant", "content": reply})
 
     # Три формати: [ACTION:type:param], [type:param] і голе type:param
@@ -4432,7 +4819,9 @@ def ask_lin(user_input: str) -> str:
             "system_lock":        ["заблокуй", "lock", "блокуй", "заблок"],
             "system_sleep":       ["сплячий", "sleep", "сон", "засни", "вимкни монітор"],
             "system_restart":     ["перезавантаж", "restart", "reboot", "ребут"],
-            "system_shutdown_pc": ["вимкни комп", "shutdown", "вимикай", "вимкни пк"],
+            # Без голого «вимикай»: воно є і в «вимикай музику»
+            "system_shutdown_pc": ["вимкни комп", "вимикай комп", "виключи комп", "вимкни пк",
+                                   "вимикай пк", "вимкни ноут", "shutdown", "вимкнення комп"],
             # close_window: ширший список — раніше блокував легітимні запити
             "close_window":       ["закрий", "закрити", "close", "зупини програму",
                                    "вийди з програми", "закрий вікно"],
@@ -4457,8 +4846,8 @@ def ask_lin(user_input: str) -> str:
             keywords = DANGEROUS[action_type]
             if not any(kw in user_input.lower() for kw in keywords):
                 log.warning(f"Заблоковано небезпечну дію [{action_type}] — запит не містить явного наміру: '{user_input}'")
-                reply = _ACTION_RE.sub("", reply).strip()
-                return reply
+                # Текст моделі («Вимикаю…») не зачитуємо: дія ж не виконана
+                return "Цього не роблю: не почула явного прохання."
         # ───────────────────────────────────────────────────────────────────────
 
         # ── Веб-пошук: типово відповідаємо ГОЛОСОМ; вкладку — лише на явне прохання ──
@@ -4472,19 +4861,24 @@ def ask_lin(user_input: str) -> str:
         elif action_type == "web_search" and wants_browser:
             action_type = "search_web"        # явно просять браузер — відкриваємо вкладку
 
+        # ── Незворотні дії: питаємо ЗАВЖДИ ─────────────────────────────────────
+        # Навіть коли намір у фразі звучить явно: помиляється і модель, і
+        # розпізнавання, а вимкнений компʼютер з незбереженою роботою чи стерті
+        # плани не повернеш. Після дії текст моделі не зачитуємо, про результат
+        # скаже сама дія.
+        if action_type in _MUST_CONFIRM and not (
+                action_type == "note_clear" and action_param.strip().lower() in ("done", "виконані", "виконане")):
+            question, extra_yes = _MUST_CONFIRM[action_type]
+            if not _confirm(question.format(p=action_param[:40]), extra_yes):
+                speak("Не чіпаю.")
+                return ""
+            log.info(f"Дія (підтверджено): [{action_type}:{action_param}]")
+            execute_action(f"[ACTION:{action_type}:{action_param}]")
+            return ""
+
         # ── Підтвердження перед відкриттям ────────────────────────────────────
         # Якщо користувач САМ явно попросив (відкрий/запусти/знайди…) — НЕ перепитуємо:
         # це зайве тертя, і якщо «так» не розпізнається, дія марно зривається.
-        # note_clear незворотне і зачіпає ВСЕ одразу — питаємо завжди, навіть
-        # якщо намір у фразі виглядає явним.
-        if CONFIRM_ACTIONS and action_type == "note_clear":
-            speak("Стерти всі плани? Скажи так або ні.")
-            ans = (listen(timeout=8, phrase_limit=5) or "").lower()
-            if not any(w in ans for w in ("так", "да", "ага", "давай", "стирай", "видаляй", "окей")):
-                log.info(f"note_clear скасовано (відповідь: '{ans}')")
-                speak("Не чіпаю.")
-                return _ACTION_RE.sub("", reply).strip()
-
         CONFIRM_NEEDED = {"open_app", "open_url", "search_web", "open_youtube"}
         EXPLICIT_INTENT = ("відкрий", "відкри", "відчини", "запусти", "запуст",
                            "увімкни", "ввімкни", "вмикай", "включи", "врубай",
@@ -4493,25 +4887,19 @@ def ask_lin(user_input: str) -> str:
         explicit = any(e in user_input.lower() for e in EXPLICIT_INTENT)
         if CONFIRM_ACTIONS and action_type in CONFIRM_NEEDED and not explicit:
             label = action_param or action_type
-            speak(f"Відкрити «{label[:60]}»? Скажи так або ні.")
-            confirm = listen(timeout=8, phrase_limit=5) or ""
-            words = set(re.sub(r"[^\w\s]", " ", confirm.lower()).split())
-            YES = {"так", "ага", "угу", "давай", "ок", "окей", "добре", "звичайно",
-                   "канєшно", "конєшно", "ясно", "поїхали", "жени", "да", "yes",
-                   "go", "відкривай", "відкрий", "запускай"}
-            NO  = {"ні", "нє", "нєа", "відміна", "скасуй", "стоп", "нет", "no", "не"}
-            said_yes = bool(words & YES)
-            said_no  = bool(words & NO)
-            if not said_yes or said_no:   # дія лише на ЧІТКЕ «так» без «ні»
-                log.info(f"Дію [{action_type}:{action_param}] скасовано (відповідь: '{confirm}').")
+            if not _confirm(f"Відкрити «{label[:60]}»? Скажи так або ні.",
+                            ("відкривай", "відкрий", "запускай")):
+                log.info(f"Дію [{action_type}:{action_param}] скасовано.")
                 speak("Скасовую.")
-                reply = _ACTION_RE.sub("", reply).strip()
-                return reply
+                return ""
         # ───────────────────────────────────────────────────────────────────────
 
         full_tag = f"[ACTION:{action_type}:{action_param}]"
         log.info(f"Дія: {full_tag}")
+        _action_failed.clear()
         execute_action(full_tag)
+        if _action_failed.is_set():
+            return ""          # дія вже сама чесно сказала, що не вийшло
         reply = _ACTION_RE.sub("", reply).strip()
         if rerouted_to_voice:
             return ""   # відповідь озвучить сам пошук — не дублюємо ack моделі
@@ -4564,10 +4952,7 @@ def check_mode_change(text: str) -> bool:
     """Перевіряє чи є команда зміни режиму. Повертає True якщо режим змінився."""
     global MODE
     # Прибираємо wake word щоб не заважав порівнянню
-    t = text.lower()
-    for w in WAKE_WORDS:
-        t = t.replace(w, "").strip()
-    t = t.strip(" ,.")
+    t = vr.strip_wake_words(text.lower(), WAKE_WORDS)
 
     # Перехід в dictation mode
     for trigger in DICTATION_TRIGGERS:
@@ -4629,13 +5014,34 @@ def process_command(command: str):
     # ── Швидкі відповіді без Groq ────────────────────────────
     cmd = command.lower().strip()
 
-    # Повтори останню відповідь
-    if any(w in cmd for w in REPEAT_WORDS):
+    # Повтори останню відповідь. Лише коротке «повтори / не почув / ще раз»:
+    # раніше будь-яка фраза з «повтор» чи «ще раз» («повторюй трек», «вимкни
+    # повтор») сюди потрапляла, і повтор у Spotify голосом був недосяжний.
+    if vr.is_repeat_request(cmd):
         if _last_spoken:
             log.info("Повтор останньої відповіді")
             speak(_last_spoken)
         else:
             speak("Ще нічого не казала.")
+        return
+
+    # «Скасуй вимкнення» працює завжди і без моделі: за 30 с до вимкнення
+    # чекати відповіді LLM ризиковано
+    if vr.is_cancel_shutdown(cmd):
+        _cancel_shutdown()
+        return
+
+    # Миттєві команди: пауза, наступний трек, гучність, час, погода. Точний
+    # збіг усієї фрази, без запиту до моделі, тому спрацьовують одразу.
+    instant = vr.instant_command(cmd)
+    if instant:
+        log.info(f"Миттєва команда: {instant}")
+        if instant == "say_time":
+            speak(f"Зараз {datetime.now():%H:%M}.")
+        else:
+            execute_action(f"[ACTION:{instant}:]")
+            if LIN_UI:
+                LIN_UI.safe_set_state("idle")    # пауза чи гучність мовчки: не лишати «Думаю»
         return
 
     # Швидкість голосу — тільки якщо це коротка команда (≤ 4 слова)
@@ -4650,10 +5056,12 @@ def process_command(command: str):
             speak(_adjust_voice_rate("reset"))
             return
 
-    # Очищення планів голосом
+    # Очищення планів голосом. Стирання ВСІХ планів незворотне, тому так само
+    # через «так/ні», як і коли це вирішує модель (раніше тут стирало одразу).
     if any(w in cmd for w in ("очисти всі плани", "видали всі плани", "очисти плани",
                               "видали всі нотатки", "очисти список планів", "видали плани")):
-        speak(note_clear("all"))
+        question, extra_yes = _MUST_CONFIRM["note_clear"]
+        speak(note_clear("all") if _confirm(question, extra_yes) else "Не чіпаю.")
         return
     if any(w in cmd for w in ("очисти виконані", "видали виконані", "прибери виконані")):
         speak(note_clear("done"))
@@ -5070,24 +5478,26 @@ def assistant_loop():
                         process_command(command)
                     continue
 
-                text = listen(timeout=30)
+                # У normal-режимі це фонове чекання імені: вікно не показує
+                # «Слухаю» і не виводить підслухане, а з LOCAL_WAKE_GATE фрази
+                # без імені навіть не йдуть у хмару.
+                waiting_name = MODE == "normal"
+                text = listen(timeout=30, passive=waiting_name, wake_gate=waiting_name)
                 if not text:
                     continue
 
                 # ── DICTATION MODE: все що кажеш → вставляється в активне вікно ──
                 if MODE == "dictation":
-                    t_low = text.lower().strip()
-                    # Вихід з диктування
-                    if any(w in t_low for w in DICTATION_EXIT_WORDS):
+                    # Вихід лише на окреме «стоп» чи «стоп диктування» в кінці:
+                    # раніше «кінець тижня» чи «стопка» теж вимикали диктування
+                    if vr.is_dictation_exit(text):
                         MODE = "normal"
                         if LIN_UI: LIN_UI.set_mode("normal")
                         speak("Диктування зупинено.")
                         log.info("Режим: NORMAL (dictation exit)")
                         continue
-                    # Заміна голосової пунктуації
-                    result = text
-                    for word, symbol in _DICTATION_PUNCT.items():
-                        result = result.replace(word, symbol)
+                    # Голосова пунктуація цілими словами («команда» більше не стає «,нда»)
+                    result = vr.apply_voice_punctuation(text)
                     # Вставляємо в активне вікно через буфер
                     import pyperclip as _pc
                     _saved = _pc.paste()
@@ -5107,11 +5517,14 @@ def assistant_loop():
                     continue
 
                 # ── NORMAL MODE: чекаємо wake word ──
-                matched_wake = next((w for w in WAKE_WORDS if w in text), None)
-                if not matched_wake:
+                # Імʼя цілим словом на початку фрази чи в кінці. Раніше шукалось
+                # підрядком будь-де, і «хвилин», «лінія», «Берлін» будили Рафаеля.
+                wake = vr.find_wake(text, WAKE_WORDS)
+                if not wake:
                     continue
-
-                command = text.replace(matched_wake, "").strip(" ,.")
+                command = wake[1]
+                if LIN_UI:
+                    LIN_UI.safe_set_state("thinking", command or text)
 
                 # Перевірка зміни режиму прямо з wake word фрази
                 if check_mode_change(command):
@@ -5403,6 +5816,15 @@ class LinUI:
         if self._premium_active:
             self.root.after(200, self._animate)
             return
+        # Вікно сховане (✕ або трей) — малювати нікому, не палимо CPU
+        try:
+            hidden = self.root.state() == "withdrawn"
+        except Exception:
+            hidden = False
+        if hidden:
+            self._idle_drawn = False
+            self.root.after(300, self._animate)
+            return
         self._cv = self._orb if self._compact else self.canvas   # активне полотно
         cx = cy = 48 if self._compact else 42                    # центр під розмір полотна
 
@@ -5553,12 +5975,19 @@ def _load_config():
         "SYS_MONITOR_ENABLED", "SYS_MONITOR_INTERVAL", "MONITOR_INTERVAL",
         "VISION_MODEL", "CALENDAR_TZ",
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
+        "FAST_MODEL", "LOCAL_WAKE_GATE", "BRAIN_VAULT",
     ]
     applied = []
     for k in simple:
         if k in cfg:
             g[k] = cfg[k]
             applied.append(k)
+
+    # config.json лежить у git. Ключ, покладений сюди, потрапить у репозиторій
+    # з першим же комітом, тому працює, але з попередженням.
+    for k in ("GROQ_API_KEY", "SLACK_TOKEN"):
+        if cfg.get(k):
+            log.warning(f"{k} у config.json, а цей файл у git. Перенеси ключ у secrets.json")
 
     if isinstance(cfg.get("SYS_THRESHOLDS"), dict):
         g["SYS_THRESHOLDS"].update(cfg["SYS_THRESHOLDS"])
@@ -5573,7 +6002,7 @@ def _load_config():
     # ── Перебудова залежних об'єктів ──
     if "GROQ_API_KEY" in cfg:
         try:
-            g["client"] = Groq(api_key=g["GROQ_API_KEY"])
+            g["client"] = _make_groq_client(g["GROQ_API_KEY"])
         except Exception as e:
             log.error(f"Groq клієнт не перестворено: {e}")
     if "VOICE_RATE" in cfg:
@@ -5628,7 +6057,6 @@ def main():
             pass
         import tkinter as _tk
         import tkinter.messagebox as _tkmsg
-        import sys
         root = _tk.Tk(); root.withdraw()
         _tkmsg.showwarning("Рафаель", "Рафаель вже запущений!\nЗакрий попередню копію через трей.")
         root.destroy()
@@ -5649,6 +6077,16 @@ def main():
     _setup_hotkeys()
 
     # ── Запускаємо фонові потоки ──────────────────────────────
+    def _mark_alive():
+        try:
+            with open(ALIVE_MARKER, "w", encoding="utf-8") as f:
+                f.write(datetime.now().isoformat())
+        except Exception:
+            pass
+    _alive_timer = threading.Timer(ALIVE_AFTER, _mark_alive)
+    _alive_timer.daemon = True
+    _alive_timer.start()
+
     threading.Thread(target=assistant_loop,   daemon=True).start()
     threading.Thread(target=reminder_loop,    daemon=True).start()
     threading.Thread(target=briefing_loop,    daemon=True).start()
