@@ -5,6 +5,7 @@
   "VOICE_PITCH": "+3Hz",
   "CONFIRM_ACTIONS": true,
   "BRIEFING_HOUR": 9,
+  "CALENDAR_REMIND_MINUTES": 10,
 
   "PUSH_TO_TALK": false,
   "PTT_HOTKEY": "ctrl+alt+m",

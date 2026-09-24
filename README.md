@@ -17,7 +17,7 @@ Personal project, built and used daily.
 | **Speech in** | Whisper → Google → Vosk fallback chain, Vosk works fully offline |
 | **Speech out** | neural TTS (edge-tts), Ukrainian voice |
 | **Mail** | two Gmail accounts, 10-category triage, only what matters is spoken aloud |
-| **Calendar** | upcoming events, reminders |
+| **Calendar** | today / tomorrow / week, new events by voice, a spoken reminder 10 minutes before each event |
 | **Music** | full Spotify control |
 | **Vision** | screenshots described by a vision model on request |
 | **Dictation** | speaks into the cursor, or straight into an Obsidian vault |

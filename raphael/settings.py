@@ -186,6 +186,7 @@ BRAIN_VAULT = os.path.expandvars(r"%USERPROFILE%\OneDrive\Документы\mem
 
 BRIEFING_HOUR = 7                    # година ранкового дайджесту
 CALENDAR_TZ   = "Europe/Vilnius"     # часовий пояс нових подій у календарі
+CALENDAR_REMIND_MINUTES = 10         # за скільки хвилин нагадувати про подію (0 = ні)
 CLAUDE_CMD    = os.path.expandvars(r"%APPDATA%\npm\claude.cmd")   # Claude Code CLI
 
 # Окрема модель для коротких команд. Порожньо = усе йде на основну.
@@ -225,7 +226,7 @@ def _load_config():
         "BRAIN_HOTKEY", "BRAIN_DICTATE_LIMIT", "BRAIN_PAUSE_THRESHOLD",
         "TAP_TOGGLE_KEY", "TAP_MAX_HOLD", "TAP_ACTION",
         "SYS_MONITOR_ENABLED", "SYS_MONITOR_INTERVAL", "MONITOR_INTERVAL",
-        "VISION_MODEL", "CALENDAR_TZ",
+        "VISION_MODEL", "CALENDAR_TZ", "CALENDAR_REMIND_MINUTES",
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
         "FAST_MODEL", "WAKE_ENGINE", "BRAIN_VAULT",
     ]
