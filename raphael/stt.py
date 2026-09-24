@@ -160,7 +160,7 @@ def _get_vosk_model():
                 os.environ.get("LOCALAPPDATA") or tempfile.gettempdir(), "lin-vosk")
             if not os.path.isdir(ascii_dir):
                 subprocess.run(["cmd", "/c", "mklink", "/J", ascii_dir, path],
-                               capture_output=True, text=True, timeout=10)
+                               capture_output=True, timeout=10)
             if os.path.isdir(ascii_dir) and ascii_dir.isascii():
                 log.info(f"Vosk: ASCII-junction {ascii_dir} → модель")
                 path = ascii_dir

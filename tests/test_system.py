@@ -1,6 +1,8 @@
 """Стан системи: журнал Windows через wevtutil і винуватець навантаження CPU."""
 import types
 
+import pytest
+
 SAMPLE = (
     "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System>"
     "<Provider Name='Microsoft-Windows-Kernel-Power' Guid='{331c3b3a}'/>"
@@ -24,9 +26,18 @@ def test_wevtutil_xml_is_parsed(env):
 
 
 def test_utf16_output_is_decoded(env, monkeypatch):
-    run = lambda *a, **k: types.SimpleNamespace(stdout=SAMPLE.encode("utf-16-le"))
+    run = lambda *a, **k: types.SimpleNamespace(returncode=0, stdout=SAMPLE.encode("utf-16-le"))
     monkeypatch.setattr(env.get("subprocess"), "run", run)
     assert len(env.get("_parse_events")(env.get("_query_system_log")(60_000, 25))) == 3
+
+
+def test_broken_query_is_not_an_empty_log(env, monkeypatch):
+    run = lambda *a, **k: types.SimpleNamespace(returncode=87, stdout=b"",
+                                                stderr=b"The parameter is incorrect.")
+    monkeypatch.setattr(env.get("subprocess"), "run", run)
+    with pytest.raises(OSError, match="parameter is incorrect"):
+        env.get("_query_system_log")(60_000, 25)
+    assert env.get("_get_event_log_errors")() == []          # монітор при цьому мовчить
 
 
 def test_only_critical_or_important_errors_are_announced(env):

@@ -161,12 +161,22 @@ _LEVEL_NAMES = {1: "critical", 2: "error"}
 
 
 def _query_system_log(ms: int, count: int) -> str:
-    """XML критичних подій і помилок журналу System за останні ms мілісекунд."""
+    """
+    XML критичних подій і помилок журналу System за останні ms мілісекунд.
+    Збій самого запиту кидає OSError, а не повертає порожнечу: інакше
+    зламаний запит виглядав би як «помилок у журналі немає».
+    """
     query = f"*[System[(Level=1 or Level=2) and TimeCreated[timediff(@SystemTime) <= {ms}]]]"
-    raw = subprocess.run(
+    r = subprocess.run(
         ["wevtutil", "qe", "System", f"/q:{query}", "/f:xml", f"/c:{count}", "/rd:true"],
         capture_output=True, timeout=10,
-    ).stdout or b""
+    )
+    if r.returncode != 0:
+        raise OSError(f"wevtutil {r.returncode}: {_decode(r.stderr or b'').strip()[:200]}")
+    return _decode(r.stdout or b"")
+
+
+def _decode(raw: bytes) -> str:
     # Кодування виводу залежить від версії Windows: ловимо і UTF-16, і 8-бітне
     return raw.decode("utf-16-le" if b"\x00" in raw else "utf-8", errors="ignore")
 

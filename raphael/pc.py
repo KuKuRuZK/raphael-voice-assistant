@@ -377,7 +377,9 @@ SHUTDOWN_DELAY = 30   # секунд до вимкнення/ребуту: ча�
 def _cancel_shutdown():
     """shutdown /a і чесна відповідь, чи було що скасовувати."""
     try:
-        r = subprocess.run(["shutdown", "/a"], capture_output=True, text=True, timeout=10)
+        # Без text=True: вивід не потрібен, а консоль пише в cp866, і
+        # декодування в кодуванні системи могло впасти посеред успіху
+        r = subprocess.run(["shutdown", "/a"], capture_output=True, timeout=10)
         tts.speak("Скасувала вимкнення." if r.returncode == 0 else
               "Вимкнення не було заплановане.")
     except Exception as e:

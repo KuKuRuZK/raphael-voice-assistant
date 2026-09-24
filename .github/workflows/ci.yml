@@ -8,13 +8,29 @@ jobs:
   test:
     # Windows-only бібліотеки підмінені заглушками (tests/stubs.py), тому
     # тут ганяються і чиста логіка, і поведінка Рафаеля цілком (smoke-тести).
+    # 3.10 це найстаріша версія, яку обіцяє requirements.txt.
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.10", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install pytest pyflakes psutil SpeechRecognition spotipy pillow
+      - run: python -m py_compile *.py raphael/*.py
+      - run: python -m pyflakes *.py raphael/*.py tests/*.py
+      - run: python -m pytest -q
+
+  windows:
+    # Ті самі тести на справжній Windows: шляхи, кодування, os.replace, а
+    # tests/test_windows.py ще й запускає справжній wevtutil
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pytest pyflakes psutil SpeechRecognition spotipy pillow
-      - run: python -m py_compile *.py raphael/*.py
-      - run: python -m pyflakes *.py raphael/*.py tests/*.py
+      - run: pip install pytest psutil SpeechRecognition spotipy pillow
       - run: python -m pytest -q
