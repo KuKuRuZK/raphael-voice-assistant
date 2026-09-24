@@ -104,6 +104,10 @@ pytest
 For offline speech recognition, download a Vosk Ukrainian model from
 [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) and unpack it
 into `vosk-model-uk/`. It is 128 MB, so it is not in this repository.
+With the model in place, `"WAKE_ENGINE": "vosk"` in `config.json` makes the
+wake word local as well: the name is spotted on the machine, and only phrases
+that contain it are sent to Whisper. If the model or the name in its
+vocabulary is missing, the assistant says so in the log and keeps using Whisper.
 
 `start_hidden.vbs` launches everything windowless through the watchdog.
 

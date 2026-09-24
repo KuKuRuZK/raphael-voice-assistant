@@ -73,6 +73,13 @@ CHROME_PATH    = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
 # реагує повільно — опусти до 0.7. Можна задати в config.json.
 PAUSE_THRESHOLD = 0.9
 
+# Як чекати імʼя в звичайному режимі:
+#   "whisper"  кожна почута фраза йде в Groq Whisper, а імʼя шукається в тексті
+#   "vosk"     імʼя шукає Vosk локально, у Whisper іде лише фраза з імʼям
+#              (потрібна модель vosk-model-uk і імʼя в її словнику, інакше
+#              Рафаель сам повернеться до "whisper" і напише про це в лог)
+WAKE_ENGINE = "whisper"
+
 # Якщо True — Лін запитає підтвердження перед відкриттям програм/браузера
 CONFIRM_ACTIONS = True
 
@@ -219,7 +226,7 @@ def _load_config():
         "SYS_MONITOR_ENABLED", "SYS_MONITOR_INTERVAL", "MONITOR_INTERVAL",
         "VISION_MODEL", "CALENDAR_TZ",
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
-        "FAST_MODEL", "LOCAL_WAKE_GATE", "BRAIN_VAULT",
+        "FAST_MODEL", "WAKE_ENGINE", "BRAIN_VAULT",
     ]
     applied = []
     for k in simple:

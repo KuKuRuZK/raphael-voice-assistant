@@ -486,10 +486,17 @@ def assistant_loop():
                     continue
 
                 # У normal-режимі це фонове чекання імені: вікно не показує
-                # «Слухаю» і не виводить підслухане, а з LOCAL_WAKE_GATE фрази
-                # без імені навіть не йдуть у хмару.
+                # «Слухаю» і не виводить підслухане. З WAKE_ENGINE="vosk" імʼя
+                # шукається локально, і фрази без нього взагалі не йдуть у хмару.
                 waiting_name = MODE == "normal"
-                text = stt.listen(timeout=30, passive=waiting_name, wake_gate=waiting_name)
+                text = None
+                if waiting_name and cfg.WAKE_ENGINE == "vosk":
+                    text = stt.wait_for_wake(timeout=30, interrupt=lambda: (
+                        MODE != "normal" or cfg.PUSH_TO_TALK
+                        or dictation._typing_dictation.is_set()
+                        or dictation._brain_dictating.is_set()))
+                if text is None:                      # локального детектора немає
+                    text = stt.listen(timeout=30, passive=waiting_name)
                 if not text:
                     continue
 

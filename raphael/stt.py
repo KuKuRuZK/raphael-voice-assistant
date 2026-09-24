@@ -2,7 +2,6 @@
 Розпізнавання мови: Whisper (Groq) → Google → Vosk, фільтр галюцинацій,
 listen(), що не пише мікрофон під час власної озвучки.
 """
-import difflib
 import json
 import logging
 import os
@@ -17,7 +16,6 @@ from groq import Groq
 from raphael import runtime
 from raphael import settings as cfg
 from raphael import tts
-from raphael import voice_rules as vr
 
 log = logging.getLogger("Лін")
 
@@ -200,34 +198,6 @@ def _transcribe_vosk(audio) -> str:
         return ""
 
 
-# Експериментальний локальний фільтр імені (вимкнено за замовчуванням, вмикається
-# в config.json). У normal-режимі кожна почута поруч фраза (телевізор, музика,
-# дзвінок) іде в Groq Whisper, хоча потрібні лише ті, де є імʼя. З фільтром
-# спершу Vosk НА ЦЬОМУ компʼютері перевіряє, чи схоже, що звернулись до Рафаеля,
-# і тільки тоді аудіо летить у хмару. Без моделі Vosk фільтр нічого не блокує.
-LOCAL_WAKE_GATE = False
-
-
-def _vosk_heard_wake(audio) -> bool:
-    model = _get_vosk_model()
-    if not model:
-        return True
-    try:
-        from vosk import KaldiRecognizer
-        rec = KaldiRecognizer(model, 16000)
-        rec.AcceptWaveform(audio.get_raw_data(convert_rate=16000, convert_width=2))
-        heard = (json.loads(rec.FinalResult()).get("text") or "").strip().lower()
-    except Exception as e:
-        log.debug(f"Wake-фільтр Vosk: {e}")
-        return True                       # фільтр зламався: краще пропустити, ніж оглухнути
-    words = heard.split()
-    edge = words[:vr.WAKE_MAX_POSITION] + words[-1:]
-    ok = bool(vr.find_wake(heard, cfg.WAKE_WORDS)) or any(
-        difflib.get_close_matches(w, cfg.WAKE_WORDS, n=1, cutoff=0.75) for w in edge)
-    log.debug(f"Wake-фільтр Vosk: '{heard}' → {'пропускаю в Whisper' if ok else 'не імʼя'}")
-    return ok
-
-
 def _wait_tts_quiet():
     """Чекає, доки замовкне озвучка (плюс хвіст на відлуння кімнати)."""
     while tts._tts_active.is_set() or time.monotonic() - tts._tts_last_end < tts.TTS_ECHO_TAIL:
@@ -237,7 +207,14 @@ def _wait_tts_quiet():
 _mic_calibrated = False   # калібруємо мікрофон лише раз
 
 
-def listen(timeout=30, phrase_limit=20, passive=False, wake_gate=False) -> str:
+def _transcribe(audio) -> str:
+    """Whisper (найкраще) → Google → Vosk (офлайн, коли немає інтернету)."""
+    return (_transcribe_whisper(audio)
+            or _transcribe_google(audio)
+            or _transcribe_vosk(audio))
+
+
+def listen(timeout=30, phrase_limit=20, passive=False) -> str:
     """
     Слухає одну фразу і повертає текст ("" якщо тиша чи не розпізнано).
 
@@ -249,7 +226,6 @@ def listen(timeout=30, phrase_limit=20, passive=False, wake_gate=False) -> str:
     passive=True: фонове слухання в normal-режимі, коли чекаємо імʼя. Стан
     вікна не змінюємо: «Слухаю» світиться лише тоді, коли Рафаель справді
     чекає команду, і на екран не виводиться все, що сказали поруч.
-    wake_gate=True: з LOCAL_WAKE_GATE фраза без імені відкидається локально.
     """
     global _mic_calibrated
     show = bool(runtime.LIN_UI) and not passive
@@ -276,13 +252,7 @@ def listen(timeout=30, phrase_limit=20, passive=False, wake_gate=False) -> str:
                 continue
             break
 
-        if wake_gate and LOCAL_WAKE_GATE and not _vosk_heard_wake(audio):
-            return ""
-
-        # Whisper (найкраще) → Google → Vosk (офлайн, коли немає інтернету)
-        text = (_transcribe_whisper(audio)
-                or _transcribe_google(audio)
-                or _transcribe_vosk(audio))
+        text = _transcribe(audio)
 
         if not text:
             log.debug("STT: не розпізнано")
@@ -298,3 +268,95 @@ def listen(timeout=30, phrase_limit=20, passive=False, wake_gate=False) -> str:
         if show: runtime.LIN_UI.safe_set_state("idle")
         time.sleep(1)   # без мікрофона цикл інакше крутився б без паузи, забиваючи лог
         return ""
+
+
+# ── Локальний детектор імені (WAKE_ENGINE = "vosk") ──────────────────────────
+# Зі звичайним двигуном ("whisper") кожна фраза, почута поруч (телевізор,
+# музика, дзвінок), іде в Groq Whisper лише для того, щоб перевірити, чи
+# немає в ній імені. Це і квота, і приватність. Тут імʼя шукає Vosk на цьому
+# компʼютері: він безперервно слухає мікрофон з граматикою з самих імен, і
+# лише коли фраза закінчилась і в ній прозвучало імʼя, аудіо саме цієї фрази
+# йде в Whisper за повним текстом. Остаточно імʼя все одно перевіряє
+# voice_rules.find_wake на тексті від Whisper, тож хибне спрацювання Vosk коштує лише
+# один запит.
+WAKE_CHUNK = 4000              # 0.25 с аудіо на 16 кГц
+WAKE_MAX_UTTERANCE = 20        # секунд: з довшої фрази лишається кінець
+_wake_vocab = None             # імена, які є в словнику моделі (кешується)
+
+
+def _vosk_wake_words():
+    """Імена зі словника моделі Vosk. None: локальний детектор недоступний."""
+    global _wake_vocab
+    model = _get_vosk_model()
+    if not model:
+        return None
+    if _wake_vocab is None:
+        try:
+            _wake_vocab = sorted(w for w in cfg.WAKE_WORDS if model.find_word(w) != -1)
+        except Exception as e:
+            log.error(f"Локальний детектор імені: словник моделі недоступний: {e}")
+            _wake_vocab = []
+        if _wake_vocab:
+            log.info(f"Локальний детектор імені: слухаю {_wake_vocab}")
+        else:
+            log.warning("Локальний детектор імені: жодного імені немає в словнику моделі "
+                        "Vosk, лишаюсь на Whisper")
+    return _wake_vocab or None
+
+
+def wait_for_wake(timeout=30, interrupt=None):
+    """
+    Чекає звертання до Рафаеля, слухаючи мікрофон локально (Vosk).
+
+    → текст фрази з імʼям (від Whisper/Google/Vosk, як у listen());
+      "" якщо за timeout звертання не було або interrupt() попросив зупинитись;
+      None якщо локальний детектор недоступний (немає моделі чи імен у словнику,
+      не відкрився мікрофон), і тоді треба слухати по-старому через listen().
+    """
+    names = _vosk_wake_words()
+    if not names:
+        return None
+    from vosk import KaldiRecognizer
+    rec = KaldiRecognizer(_get_vosk_model(), 16000,
+                          json.dumps(names + ["[unk]"], ensure_ascii=False))
+    wanted = set(names)
+    limit = WAKE_MAX_UTTERANCE * 16000 * 2
+    utterance = bytearray()
+    heard_name = False
+    epoch = tts._tts_epoch
+    deadline = time.monotonic() + timeout
+    try:
+        with sr.Microphone(sample_rate=16000, chunk_size=WAKE_CHUNK) as source:
+            while time.monotonic() < deadline:
+                if interrupt and interrupt():
+                    return ""
+                data = source.stream.read(WAKE_CHUNK)
+                # Поки звучить сам Рафаель (і трохи після), мікрофон не слухаємо:
+                # фраза, в яку втрутилась озвучка, починається заново
+                if (tts._tts_active.is_set() or tts._tts_epoch != epoch
+                        or time.monotonic() - tts._tts_last_end < tts.TTS_ECHO_TAIL):
+                    rec.Reset()
+                    utterance.clear()
+                    heard_name, epoch = False, tts._tts_epoch
+                    continue
+                utterance += data
+                if len(utterance) > limit:
+                    del utterance[:len(utterance) - limit]
+                if rec.AcceptWaveform(bytes(data)):
+                    said = set(json.loads(rec.Result()).get("text", "").split())
+                    if said & wanted:
+                        log.debug(f"Локальний детектор: імʼя {sorted(said & wanted)}, фраза в розпізнавання")
+                        return _transcribe(sr.AudioData(bytes(utterance), 16000, 2)) or ""
+                    utterance.clear()
+                    heard_name = False
+                elif not heard_name:
+                    partial = set(json.loads(rec.PartialResult()).get("partial", "").split())
+                    if partial & wanted:
+                        heard_name = True            # «Слухаю» з першим звуком імені
+                        if runtime.LIN_UI:
+                            runtime.LIN_UI.safe_set_state("listening")
+        return ""
+    except Exception as e:
+        log.error(f"Локальний детектор імені: {e}", exc_info=True)
+        time.sleep(1)
+        return None
