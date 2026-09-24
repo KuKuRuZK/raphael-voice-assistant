@@ -19,7 +19,7 @@ def slow_parts(env):
     env.patch("_get_calendar", lambda: object())
     env.patch("_calendar_agenda_text", slow("Сьогодні подій немає."))
     env.patch("_gmail_accounts", lambda: [("основна", None)])
-    env.patch("_gmail_unread_text", slow("Непрочитаних листів немає."))
+    env.patch("_gmail_digest_text", slow("Важливих непрочитаних листів за добу немає."))
     env.patch("_system_health_report", slow("Все в нормі."))
     env.patch("_auth_dead", {})
 
@@ -29,7 +29,7 @@ def test_briefing_parts_load_in_parallel(env, slow_parts):
     env.get("morning_briefing")()
     assert time.monotonic() - started < 0.9          # по черзі було б 1.2 с
     assert env.spoken[1:] == ["Погода: ясно", "Сьогодні подій немає.",
-                              "Непрочитаних листів немає.", "Все в нормі.", "Гарного дня!"]
+                              "Важливих непрочитаних листів за добу немає.", "Все в нормі.", "Гарного дня!"]
 
 
 def test_briefing_names_dead_google_access_once(env, slow_parts):

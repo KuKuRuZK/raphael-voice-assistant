@@ -191,11 +191,14 @@ def _gmail_box(label: str) -> str:
     return "основна"
 
 
+def _token_for(label: str) -> str:
+    return next((a["token"] for a in cfg.GMAIL_ACCOUNTS if a["label"] == label), cfg.GMAIL_TOKEN_PATH)
+
+
 def _account_error(label: str, what: str, e) -> None:
     """Помилка однієї скриньки: мертвий токен відмічаємо, решту пишемо в лог."""
     if _is_auth_error(e):
-        _auth_problem(next((a["token"] for a in cfg.GMAIL_ACCOUNTS if a["label"] == label),
-                           cfg.GMAIL_TOKEN_PATH), e)
+        _auth_problem(_token_for(label), e)
     else:
         log.error(f"Gmail {what} [{label}]: {e}")
 
@@ -324,6 +327,86 @@ def _gmail_unread_text(limit: int = 5) -> str:
 def _gmail_unread(limit: int = 5) -> None:
     """Читає непрочитані листи з усіх скриньок — скільки і від кого."""
     tts.speak(_gmail_unread_text(limit))
+
+
+# ── Пошта за добу для дайджесту ──────────────────────────────────────────────
+# Категорії, про які варто сказати зранку, від найдорожчої помилки до
+# найдешевшої (як у mail_triage), і як їх назвати для 1, 2 і 5 листів
+_DIGEST = [
+    (mail_triage.SECURITY, ("лист про безпеку", "листи про безпеку", "листів про безпеку")),
+    (mail_triage.MONEY,    ("лист про гроші", "листи про гроші", "листів про гроші")),
+    (mail_triage.WORK,     ("лист по роботі", "листи по роботі", "листів по роботі")),
+    (mail_triage.OFFICIAL, ("офіційний лист", "офіційні листи", "офіційних листів")),
+    (mail_triage.HUMAN,    ("живий лист", "живі листи", "живих листів")),
+    (mail_triage.DELIVERY, ("доставка", "доставки", "доставок")),
+]
+_NOISE_CAP = 100
+
+
+@_one_at_a_time
+def _gmail_digest_text() -> str:
+    """
+    Пошта за добу для ранкового дайджесту: непрочитане важливе по категоріях
+    сортувальника, від кого живі листи і скільки розсилок прибрано. Раніше
+    звучало «5 листів від X, Y», і не було зрозуміло, чи там щось важливе.
+    Без сортувальника це звичайний список непрочитаних.
+    """
+    if not cfg.MAIL_TRIAGE_ENABLED:
+        return _gmail_unread_text()
+    # Розкласти те, що прийшло, поки компʼютер спав: монітор зробить це лише
+    # за кілька хвилин після старту, а дайджест звучить одразу. Розкладене
+    # тут монітор уже не оголосить вдруге.
+    _gmail_check_new()
+    accounts = _gmail_accounts()
+    if not accounts:
+        return auth_warning() or "Gmail не налаштований."
+    counts = {cat: 0 for cat, _ in _DIGEST}
+    humans, failed = [], []
+    noise, noise_capped = 0, False
+    for label, svc in accounts:
+        try:
+            ids = _triage_labels(svc, _token_for(label))
+
+            def recent(cat, unread=True, limit=50):
+                return svc.users().messages().list(
+                    userId="me", labelIds=[ids[cat]] + (["UNREAD"] if unread else []),
+                    q="newer_than:1d", maxResults=limit,
+                ).execute().get("messages", [])
+
+            for cat, _ in _DIGEST:
+                msgs = recent(cat)
+                counts[cat] += len(msgs)
+                if cat == mail_triage.HUMAN:
+                    for m in msgs[:3]:
+                        full = svc.users().messages().get(
+                            userId="me", id=m["id"], format="metadata", metadataHeaders=["From"]
+                        ).execute()
+                        humans.append(_gmail_parse_sender(_gmail_headers(full).get("From", "?")))
+            # Шум рахуємо весь, не лише непрочитаний: його ніхто й не відкриває
+            cleaned = recent(mail_triage.NOISE, unread=False, limit=_NOISE_CAP)
+            noise += len(cleaned)
+            noise_capped |= len(cleaned) >= _NOISE_CAP
+        except Exception as e:
+            _account_error(label, "digest", e)
+            failed.append(label)
+
+    parts = []
+    for cat, forms in _DIGEST:
+        if counts[cat]:
+            part = vr.count(counts[cat], *forms)
+            if cat == mail_triage.HUMAN and humans:
+                part += " від " + ", ".join(dict.fromkeys(humans))
+            parts.append(part)
+    if len(failed) == len(accounts):
+        text = ""
+    elif parts:
+        text = "Непрочитане за добу: " + ", ".join(parts) + "."
+    else:
+        text = "Важливих непрочитаних листів за добу немає."
+    if noise:
+        at_least = "щонайменше " if noise_capped else ""
+        text += f" Ще прибрала з вхідних {at_least}{vr.count(noise, 'розсилку', 'розсилки', 'розсилок')}."
+    return f"{text} {_mail_tail(failed, len(accounts) > 1)}".strip()
 
 
 @_one_at_a_time
@@ -562,8 +645,7 @@ def _gmail_check_new() -> list:
         for label, svc in accounts:
             try:
                 box = _gmail_box(label)
-                token_path = next((a["token"] for a in cfg.GMAIL_ACCOUNTS
-                                   if a["label"] == label), label)
+                token_path = _token_for(label)
                 # Мітки Трекер/* і є памʼяттю монітора: лист із такою міткою вже
                 # розкладено (у минулому проході чи до перезапуску) і, якщо він
                 # того вартий, уже оголошено. Памʼять у RAM цього не переживала.

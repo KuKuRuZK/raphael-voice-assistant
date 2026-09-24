@@ -57,7 +57,7 @@ def morning_briefing(greeting: bool = True):
             pool.submit(_part, "погода", lambda: f"Погода: {web._get_weather()}"),
             pool.submit(_part, "календар", lambda: agenda._calendar_agenda_text("today")
                         if agenda._get_calendar() else ""),
-            pool.submit(_part, "пошта", lambda: gmail._gmail_unread_text(limit=5)
+            pool.submit(_part, "пошта", lambda: gmail._gmail_digest_text()
                         if gmail._gmail_accounts() else ""),
             pool.submit(_part, "система", sysmon._system_health_report),
         ]
