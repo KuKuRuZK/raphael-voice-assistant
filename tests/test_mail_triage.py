@@ -7,7 +7,7 @@
 """
 import pytest
 
-import mail_triage as mt
+from raphael import mail_triage as mt
 
 MAIN, OFFICIAL_BOX = "основна", "офіційна"
 

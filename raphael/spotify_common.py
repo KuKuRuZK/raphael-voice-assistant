@@ -8,7 +8,8 @@ pythonw падала з «lost sys.stdin». Тепер список один.
 """
 import os
 
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Токен лежить у корені проєкту, поруч із lin.py і spotify_auth.py
+SCRIPT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 REDIRECT_URI = "http://127.0.0.1:8888/callback"
 TOKEN_PATH = os.path.join(SCRIPT_DIR, ".spotify_token")

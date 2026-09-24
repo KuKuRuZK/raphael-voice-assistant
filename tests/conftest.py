@@ -10,11 +10,12 @@ sys.path.insert(0, REPO)
 
 
 def _project_modules():
-    """Усі вже імпортовані модулі Рафаеля (файли з кореня репозиторію)."""
+    """Усі вже імпортовані модулі Рафаеля: lin.py і пакет raphael/."""
+    dirs = {REPO, os.path.join(REPO, "raphael")}
     out = []
     for m in list(sys.modules.values()):
         f = getattr(m, "__file__", None) or ""
-        if os.path.dirname(os.path.abspath(f)) == REPO:
+        if f and os.path.dirname(os.path.abspath(f)) in dirs:
             out.append(m)
     return out
 

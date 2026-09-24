@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest
 
-import voice_rules as vr
+from raphael import voice_rules as vr
 
 WAKE = {"лін", "лин", "lin", "рафаель", "рафа", "рафаелю", "raphael", "лінь", "ліна"}
 

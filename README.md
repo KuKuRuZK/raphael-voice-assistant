@@ -26,6 +26,16 @@ Personal project, built and used daily.
 
 ## How it is put together
 
+`lin.py` is only the entry point; the assistant lives in the
+[`raphael/`](raphael) package, one module per concern: `tts` and `stt` for
+speech, `llm` and `prompt` for the models, `assistant` for the main loop and
+command routing, `actions` for executing what the model asks, and a module per
+integration (`music`, `gmail`, `agenda`, `slack_chat`, `brain`, `pc`, `web`,
+`sysmon`...). Settings are read as `cfg.X` at call time from
+[`raphael/settings.py`](raphael/settings.py), so `config.json` and voice
+commands that change settings are seen everywhere at once. The module map is in
+[`raphael/__init__.py`](raphael/__init__.py).
+
 **Provider-agnostic LLM layer.** Groq, Google Gemini and a local Ollama model all
 speak the OpenAI protocol, so they sit behind one adapter and switching between
 them is a one-line config change:
@@ -45,7 +55,7 @@ the fallback, and SDK retries are off, so the switch takes seconds rather than
 a minute of silence. Short, unambiguous commands ("пауза", "наступний трек",
 "котра година") skip the model entirely.
 
-**Mail triage as a separate module.** [`mail_triage.py`](mail_triage.py) classifies
+**Mail triage as a separate module.** [`mail_triage.py`](raphael/mail_triage.py) classifies
 incoming mail into ten categories and archives the noise. It lives outside the
 main file so the rules can be edited and tested
 ([`tests/test_mail_triage.py`](tests/test_mail_triage.py)) without touching a
@@ -82,8 +92,10 @@ python lin.py
 Settings live in `config.json` (models, hotkeys, thresholds). Keys never go
 there: that file is tracked, `secrets.json` is not.
 
-Tests cover the pure logic (mail rules, wake word, reminders, command
-matching) and run on any OS:
+Tests run on any OS: the pure logic (mail rules, wake word, reminders, command
+matching) directly, and the whole assistant on stubs of the Windows-only
+libraries (`tests/stubs.py`): confirmations, model fallback, the microphone
+ignoring the assistant's own speech, the mail monitor, Spotify token checks.
 
 ```bash
 pytest

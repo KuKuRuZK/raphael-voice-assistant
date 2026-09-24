@@ -15,6 +15,6 @@ jobs:
         with:
           python-version: "3.12"
       - run: pip install pytest pyflakes psutil SpeechRecognition spotipy pillow
-      - run: python -m py_compile *.py
-      - run: python -m pyflakes *.py tests/*.py
+      - run: python -m py_compile *.py raphael/*.py
+      - run: python -m pyflakes *.py raphael/*.py tests/*.py
       - run: python -m pytest -q

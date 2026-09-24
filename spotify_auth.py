@@ -10,7 +10,7 @@ import sys
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
-import spotify_common
+from raphael import spotify_common
 
 # Ключі живуть у secrets.json, як і в lin.py. Раніше вони були зашиті прямо
 # сюди, і при публікації репозиторію client_secret став би відкритим назавжди.
