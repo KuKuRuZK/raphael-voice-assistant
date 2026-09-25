@@ -325,7 +325,7 @@ class LinUI:
         if self._premium_active:
             self.root.after(200, self._animate)
             return
-        # Вікно сховане (✕ або трей) — малювати нікому, не палимо CPU
+        # Вікно сховане (✕ або трей): малювати нікому, не палимо CPU
         try:
             hidden = self.root.state() == "withdrawn"
         except Exception:
