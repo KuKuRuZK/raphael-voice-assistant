@@ -2,13 +2,13 @@
 Преміум-орб Рафаеля: офанім із рунами, справжнє сяйво (PIL gaussian blur),
 прозоре шарове вікно Windows (per-pixel alpha через UpdateLayeredWindow).
 
-Використання з lin.py (компактний режим):
-    from raphael_orb import OrbWindow, AVAILABLE
+Використання з raphael/ui.py (компактний режим):
+    from raphael.orb import OrbWindow, AVAILABLE
     orb = OrbWindow(root, on_expand=callback)
     orb.show(x, y, state="idle"); orb.set_state("listening"); orb.hide()
 
 Усе обгорнуто в try/except — якщо платформа не Windows або щось ламається,
-AVAILABLE = False, і lin.py відкочується на простий tkinter-орб.
+AVAILABLE = False, і ui.py відкочується на простий tkinter-орб.
 """
 import math
 import threading

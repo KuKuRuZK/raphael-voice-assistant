@@ -3,7 +3,7 @@
 
 Задача одна: у скриньці на один живий лист припадає приблизно сім розсилок,
 тому «є непрочитаний лист» як сигнал не працює. Тут листи розкладаються на
-пʼять категорій, і турбувати голосом можна лише двома з них.
+десять категорій, і голосом Рафаель оголошує лише шість (ANNOUNCE).
 
 Категорії:
     шум       розсилки вакансій і реклама. Мітимо і прибираємо з вхідних.
@@ -11,6 +11,14 @@
     офіційне  установи: біржа праці, банки, міграційна. Мітимо, лишаємо, оголошуємо.
     живий     людина написала руками. Мітимо, лишаємо, оголошуємо.
     авто      машинний відправник, якого ще не знаємо. Мітимо, лишаємо, мовчимо.
+    події     квитки, мітапи. Мітимо, лишаємо, мовчимо.
+    гроші, безпека, робота, доставка   лише для основної скриньки, оголошуємо.
+
+Правила по відправнику дивляться ЛИШЕ на адресу, не на імʼя: імʼя в полі From
+кожен пише яке хоче, і «accounts.google.com <promo@spam.xyz>» ставав «безпекою»
+й зачитувався вголос.
+
+Тести: tests/test_mail_triage.py. Нове правило = новий рядок у тесті.
 
 «авто» це навмисний відстійник: туди падає все нерозпізнане машинне, і час від
 часу варто туди зазирнути та дописати правило сюди.
@@ -18,6 +26,7 @@
 Модуль не знає про Gmail нічого зайвого: сервіс передається ззовні.
 """
 import re
+from email.utils import parseaddr
 
 # ── категорії ─────────────────────────────────────────────────────────────────
 NOISE, APPLIED, OFFICIAL, HUMAN, AUTO = "шум", "подача", "офіційне", "живий", "авто"
@@ -70,8 +79,12 @@ _MONEY_FROM = re.compile(
     r"|googleplay-noreply@google|@n26\.com|@monobank|@privatbank"
     r"|e-faktura@|@pl\.orange\.com",            # рахунки Orange Польща
     re.I)
+# Без голих «declined» і «unsuccessful»: так пишуть і відмови на вакансії
+# («your application was unsuccessful»), і календар («Invitation declined»).
+# «payment unsuccessful» від Netflix ловиться словом «payment».
 _MONEY_SUBJ = re.compile(
-    r"payment|invoice|receipt|billing|charged|refund|declined|unsuccessful"
+    r"payment|invoice|receipt|billing|charged|refund"
+    r"|(card|transaction) (was |has been )?declined"
     r"|квитанц|рахунок|оплат|списан|платіж|повернення кошт"
     r"|mok[eė]jim|s[ąa]skait"                            # литовською
     r"|order .{0,20}(cancel|confirm)|замовлення .{0,20}(скасован|підтвердж)",
@@ -88,9 +101,16 @@ _DELIVERY = re.compile(
     re.I)
 # Перевіряється РАНІШЕ за магазини, тому «your order has shipped» від Temu
 # піде в доставку, а не в шум. Це навмисно: посилка реальна, реклама ні.
+# «відправлен» лише поруч із замовленням: інакше «Ваше резюме відправлено»
+# ставало доставкою
 _DELIVERY_SUBJ = re.compile(
-    r"siunt|посилк|відправлен|shipment|has shipped|order shipped"
+    r"siunt|посилк|замовлення\W+(\w+\W+){0,3}?відправлен|shipment|has shipped|order shipped"
     r"|tracking number|out for delivery|delivered|į paštomat",
+    re.I)
+# Відбійники пошти: «message not delivered» не посилка
+_BOUNCE_SUBJ = re.compile(
+    r"delivery status notification|undeliver|not (been )?delivered|failure notice"
+    r"|mail delivery (failed|subsystem)|returned mail|nepristatyt",
     re.I)
 
 _EVENT = re.compile(r"eventbrite|@lzka\.lt|@meetup\.com|@email\.meetup\.com", re.I)
@@ -215,7 +235,8 @@ _FREEMAIL = re.compile(
     re.I)
 
 # Машинні відправники, яких ще не класифікували
-_MACHINE = re.compile(r"no-?reply|donotreply|neatsakyti|notification|noreply", re.I)
+_MACHINE = re.compile(r"no-?reply|donotreply|neatsakyti|notification|noreply"
+                      r"|mailer-daemon|postmaster", re.I)
 
 
 def classify(sender: str, subject: str, box: str = "офіційна") -> str:
@@ -229,6 +250,12 @@ def classify(sender: str, subject: str, box: str = "офіційна") -> str:
     наступний блок може перехопити лист у попереднього. Переставляти лише
     свідомо, з тестом.
     """
+    # Правила, від яких лист стає ГУЧНІШИМ, дивляться лише на адресу: імʼя у From
+    # підробляється як завгодно. Ознаки машини (noreply, notification) можна
+    # брати й з імені: від них лист лише тихшає.
+    raw = sender or ""
+    sender = parseaddr(raw)[1] or raw
+    subject = subject or ""
     if box == "основна":
         # Безпека найперша: пропустити лист про вхід у акаунт найдорожче
         if _SECURITY_FROM.search(sender) or _SECURITY_SUBJ.search(subject):
@@ -239,7 +266,8 @@ def classify(sender: str, subject: str, box: str = "офіційна") -> str:
             return MONEY
         if _WORK.search(sender):
             return WORK
-        if _DELIVERY.search(sender) or _DELIVERY_SUBJ.search(subject):
+        if _DELIVERY.search(sender) or (_DELIVERY_SUBJ.search(subject)
+                                        and not _BOUNCE_SUBJ.search(subject)):
             return DELIVERY
 
     if _OFFICIAL.search(sender):
@@ -259,9 +287,9 @@ def classify(sender: str, subject: str, box: str = "офіційна") -> str:
         return NOISE
     if _ATS.search(sender):
         return HUMAN
-    if _FREEMAIL.search(sender) and not _MACHINE.search(sender):
+    if _FREEMAIL.search(sender) and not _MACHINE.search(raw):
         return HUMAN
-    if _MACHINE.search(sender):
+    if _MACHINE.search(raw):
         return AUTO
     return FALLBACK.get(box, HUMAN)
 

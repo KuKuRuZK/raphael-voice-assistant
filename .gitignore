@@ -27,12 +27,23 @@ watchdog.log
 memory.json
 notes.json
 notes_backup.json
+# лічильник денних лімітів моделей
+usage.json
+# тимчасові файли атомарного запису (notes.json.tmp тощо)
+*.tmp
+
+# Службові маркери watchdog (start.bat ↔ lin.py). crash.log ловить *.log вище
+.lin_stop
+.lin_alive
 
 # ── ВЕЛИКЕ І ЗГЕНЕРОВАНЕ ─────────────────────────────────────────────────────
 # Модель Vosk важить 128 МБ, її качають окремо з alphacephei.com
 vosk-model-uk/
+# Офлайн-голос: piper.exe і модель голосу, теж качаються окремо
+piper/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Локальні налаштування інструментів
 .claude/
