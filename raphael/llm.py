@@ -274,6 +274,7 @@ _ACTION_PREFIXES = (
     "screen_", "focus_", "memory_", "volume_", "window_", "notepad_",
     "claude_", "ask_", "kill_", "type_", "voice_", "timer", "weather",
     "currency", "hotkey", "shutdown", "get_time", "minimize_", "close_",
+    "vibe_",
 )
 
 

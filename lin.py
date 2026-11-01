@@ -107,7 +107,7 @@ for _noisy in ("PIL", "httpcore", "httpx", "urllib3", "spotipy"):
 import pystray  # noqa: E402
 
 from raphael import (agenda, assistant, briefing, hotkeys, monitor,  # noqa: E402
-                     notes, runtime, stt, sysmon, tts, ui)
+                     notes, runtime, stt, sysmon, tts, ui, vibes)
 
 log = logging.getLogger("Лін")
 
@@ -189,6 +189,7 @@ def main():
     threading.Thread(target=monitor.monitor_loop,     daemon=True).start()
     threading.Thread(target=sysmon.sys_monitor_loop, daemon=True).start()
     threading.Thread(target=agenda.calendar_reminder_loop, daemon=True).start()
+    threading.Thread(target=vibes.vibe_loop,       daemon=True).start()
 
     # ── Системний трей у фоновому потоці ─────────────────────
     def _run_tray():

@@ -3,13 +3,44 @@
 Постійна частина на початку, змінна в кінці (кеш префікса у провайдерів).
 """
 import logging
+import os
 from datetime import datetime
 
 from raphael import brain
 from raphael import notes
 from raphael import settings as cfg
+from raphael import vibes
 
 log = logging.getLogger("Лін")
+
+
+# Характер без persona.txt: стриманий Рафаель, яким він був до енграми
+DEFAULT_PERSONA = (
+    "Ти Рафаель (можна Рафа). Голосовий асистент Влада. Говориш тільки українською. "
+    "Ти як близька знайома: коротко, по-людськи, без жодної офіційщини. "
+    "Відповідь: одне речення, максимум два. Без довгих пояснень. "
+    "СТИЛЬ: говориш природно, можеш казати 'ну', 'хм', 'ага', 'та ладно', 'окей'. "
+    "Ніяких 'Звичайно!', 'Відмінно!', 'Я розумію'. Це звучить як робот."
+)
+
+
+def persona_path() -> str:
+    return os.path.join(cfg._ROOT, cfg.PERSONA_FILE)   # абсолютний шлях join не чіпає
+
+
+def persona_block() -> str:
+    """Характер з PERSONA_FILE: рядки з # пропускаються. Нема файлу → DEFAULT_PERSONA."""
+    try:
+        with open(persona_path(), encoding="utf-8") as f:
+            text = " ".join(line.strip() for line in f
+                            if line.strip() and not line.lstrip().startswith("#"))
+        if text:
+            return text
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        log.warning(f"{cfg.PERSONA_FILE} не прочитано: {e}")
+    return DEFAULT_PERSONA
 
 
 def build_system_prompt() -> str:
@@ -48,11 +79,7 @@ def build_system_prompt() -> str:
         log.debug(f"brain_block пропущено: {e}")
 
     return (
-        "Ти — Рафаель (можна Рафа). Голосовий асистент Влада. Говориш тільки українською. "
-        "Ти як близька знайома — коротко, по-людськи, без жодної офіційщини. "
-        "Відповідь — одне речення, максимум два. Без довгих пояснень. "
-        "СТИЛЬ: говориш природно, можеш казати 'ну', 'хм', 'ага', 'та ладно', 'окей'. "
-        "Ніяких 'Звичайно!', 'Відмінно!', 'Я розумію'. Це звучить як робот. "
+        persona_block() + " "
         "ГОЛОВНЕ: НЕ ПОВТОРЮЙ ЩО СКАЗАВ ВЛАД — просто відповідай по суті. "
         "Якщо не знаєш — кажи 'не знаю'. Якщо питання дурне — скажи прямо. "
         "ЧЕСНІСТЬ — АБСОЛЮТНЕ ПРАВИЛО: "
@@ -120,6 +147,7 @@ def build_system_prompt() -> str:
         "monitor_on:gmail/slack/system/all — стежити | monitor_off:... — не стежити | "
         "system_health: — стан системи + помилки журналу | "
         "usage_report: - скільки денних лімітів моделей уже витрачено | "
+        "vibe_off: - не коментувати ігри й музику самій | vibe_on: - знову коментувати | "
         "shutdown:. "
         "Нагадування: 'о 21:00' → note_remind:текст|21:00; 'через 30 хв' → note_remind:текст|30; "
         "'завтра о 9', 'у пʼятницю о 10' → note_remind:текст|РРРР-ММ-ДД ГГ:ХХ (дату порахуй від сьогоднішньої). "
@@ -181,7 +209,7 @@ def build_system_prompt() -> str:
         # Змінне в самому кінці: постійна частина вище однакова в кожному
         # запиті, і провайдери, що кешують початок промпту, її перевикористають.
         # Час inject_time() допише ще далі.
-        + brain_block + memory_block + notes_reminder
+        + brain_block + memory_block + notes_reminder + vibes.context()
     ).rstrip()
 
 

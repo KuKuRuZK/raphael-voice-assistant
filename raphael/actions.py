@@ -27,6 +27,7 @@ from raphael import sysmon
 from raphael import timers
 from raphael import tts
 from raphael import usage
+from raphael import vibes
 from raphael import voice_rules as vr
 from raphael import web
 
@@ -389,6 +390,12 @@ def execute_action(action_str: str):
                 return ""
             result = brain.brain_capture(dictation._last_dictation)
             tts.speak(result if len(dictation._last_dictation) < 120 else "Зберегла у вхідні.")
+            return result
+
+        # ── ВАЙБИ (коментарі до ігор і музики) ──
+        elif t in ("vibe_on", "vibe_off"):
+            result = vibes.toggle(t == "vibe_on")
+            tts.speak(result)
             return result
 
         # ── ФОКУС ──

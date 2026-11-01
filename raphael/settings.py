@@ -233,6 +233,36 @@ TAP_MAX_HOLD   = 0.4                   # довше утримання = зви�
 # Рафаеля завжди просто зупиняє озвучку.
 TAP_ACTION     = "ptt"
 
+# ── Характер ──────────────────────────────────────────────────────────────────
+# Початок системного промта береться з цього файлу (відносний шлях = від теки
+# проєкту), правила чесності й дій лишаються в коді. Файл читається на кожен
+# запит, тож правку видно з наступної ж фрази, без перезапуску. Нема файлу =
+# стриманий Рафаель з prompt.DEFAULT_PERSONA. Свої персонажі в git не йдуть
+# (.gitignore: persona*.txt), приклад формату: persona.example.txt.
+PERSONA_FILE = "persona.txt"
+
+# ── Вайби: сама помічає гру й музику і інколи вставляє своє ──────────────────
+# Гра = процес з теки Steam/Epic/GOG або exe зі списку VIBE_GAME_EXES.
+# Музика = зміна треку в Spotify. Мовчить, коли й так говорить чи слухає,
+# у фокус-режимі і після vibe_off.
+VIBE_ENABLED           = True
+VIBE_INTERVAL          = 20       # с між перевірками
+VIBE_MAX_PER_HOUR      = 4        # реплік сама від себе за годину, разом
+VIBE_GAME_EVERY_MIN    = 30       # репліка посеред гри не частіше
+VIBE_MUSIC_CHANCE      = 0.2      # шанс прокоментувати новий трек
+VIBE_MUSIC_MIN_GAP_MIN = 12       # хвилин між коментарями до музики
+VIBE_GAME_EXES = {
+    "cyberpunk2077.exe": "Cyberpunk 2077", "projectzomboid64.exe": "Project Zomboid",
+    "witcher3.exe": "Відьмак 3", "league of legends.exe": "League of Legends",
+    "eurotrucks2.exe": "Euro Truck Simulator 2", "arma3_x64.exe": "Arma 3",
+    "bfv.exe": "Battlefield V", "blackdesert64.exe": "Black Desert",
+    "humankind.exe": "Humankind", "nfsunbound.exe": "NFS Unbound",
+    "skullandbones.exe": "Skull and Bones", "gta5.exe": "GTA V", "rdr2.exe": "Red Dead Redemption 2",
+}
+# Теки в steamapps\common, які не ігри: Wallpaper Engine працює завжди
+VIBE_GAME_IGNORE = ["wallpaper_engine", "obs studio", "steamworks shared", "steam controller configs",
+                    "steamvr", "lossless scaling"]
+
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 
 
@@ -260,6 +290,9 @@ def _load_config():
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
         "FAST_MODEL", "WAKE_ENGINE", "BRAIN_VAULT",
         "OFFLINE_MODEL", "PIPER_EXE", "PIPER_MODEL", "TOOL_CALLING",
+        "PERSONA_FILE",
+        "VIBE_ENABLED", "VIBE_INTERVAL", "VIBE_MAX_PER_HOUR", "VIBE_GAME_EVERY_MIN",
+        "VIBE_MUSIC_CHANCE", "VIBE_MUSIC_MIN_GAP_MIN", "VIBE_GAME_EXES", "VIBE_GAME_IGNORE",
     ]
     applied = []
     for k in simple:
