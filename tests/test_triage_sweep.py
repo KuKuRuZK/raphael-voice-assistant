@@ -1,8 +1,11 @@
 """Домічування: листи, прочитані до перевірки монітора, теж отримують мітку."""
-from test_mail_digest import _mail, box  # noqa: F401  (box це фікстура)
+import test_mail_digest as digest
+
+box = digest.box      # фікстура з фейковою скринькою Gmail
+_mail = digest._mail
 
 
-def test_sweep_labels_read_mail_and_skips_labelled(env, box):  # noqa: F811
+def test_sweep_labels_read_mail_and_skips_labelled(env, box):
     mt = env.get("mail_triage")
     svc = box({
         # Влад відкрив його в Gmail раніше за монітор: UNREAD уже знято
@@ -24,7 +27,7 @@ def test_sweep_labels_read_mail_and_skips_labelled(env, box):  # noqa: F811
     assert env.spoken == []
 
 
-def test_sweep_does_nothing_without_triage(env, box):  # noqa: F811
+def test_sweep_does_nothing_without_triage(env, box):
     box({"read": {"h": {"From": "a@gmail.com", "Subject": "x"}, "labels": ["INBOX"]}})
     env.patch("MAIL_TRIAGE_ENABLED", False)
     assert env.get("_gmail_triage_sweep")() == 0
