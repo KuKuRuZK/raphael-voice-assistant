@@ -1,4 +1,4 @@
-# Рафаель — Ukrainian voice assistant for Windows
+# Рафаель: Ukrainian voice assistant for Windows
 
 A desktop voice assistant that listens in Ukrainian, understands free-form
 commands through an LLM, and acts: plays music, reads and triages mail, checks
@@ -15,16 +15,27 @@ Personal project, built and used daily.
 |---|---|
 | **Voice** | wake word or hotkey, ~140 commands, free-form phrasing routed by an LLM |
 | **Speech in** | Whisper → Google → Vosk fallback chain, Vosk works fully offline |
-| **Speech out** | neural TTS (edge-tts), Ukrainian voice |
-| **Mail** | two Gmail accounts, 9-category triage, only what matters is spoken aloud |
-| **Calendar** | upcoming events, reminders |
+| **Speech out** | edge-tts, Piper, or any local TTS server with an OpenAI-compatible API, with fallback between them |
+| **Mail** | two Gmail accounts, 11-category triage, only what matters is spoken aloud |
+| **Calendar** | today / tomorrow / week, new events by voice, a spoken reminder 10 minutes before each event |
 | **Music** | full Spotify control |
 | **Vision** | screenshots described by a vision model on request |
 | **Dictation** | speaks into the cursor, or straight into an Obsidian vault |
 | **Second brain** | searches a personal Obsidian vault and answers from it |
 | **System** | CPU / RAM / disk / battery monitoring with spoken warnings |
+| **Character** | personality from a plain text file, edited live; notices games and music and comments on its own |
 
 ## How it is put together
+
+`lin.py` is only the entry point; the assistant lives in the
+[`raphael/`](raphael) package, one module per concern: `tts` and `stt` for
+speech, `llm` and `prompt` for the models, `assistant` for the main loop and
+command routing, `actions` for executing what the model asks, and a module per
+integration (`music`, `gmail`, `agenda`, `slack_chat`, `brain`, `pc`, `web`,
+`sysmon`...). Settings are read as `cfg.X` at call time from
+[`raphael/settings.py`](raphael/settings.py), so `config.json` and voice
+commands that change settings are seen everywhere at once. The module map is in
+[`raphael/__init__.py`](raphael/__init__.py).
 
 **Provider-agnostic LLM layer.** Groq, Google Gemini and a local Ollama model all
 speak the OpenAI protocol, so they sit behind one adapter and switching between
@@ -34,39 +45,122 @@ them is a one-line config change:
 LLM_PROVIDERS = {
     "groq":   {"base_url": "https://api.groq.com/openai/v1",  ...},
     "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", ...},
-    "local":  {"base_url": "http://127.0.0.1:11434/v1", ...},
+    "local":    {"base_url": "http://127.0.0.1:11434/v1", ...},   # Ollama
+    "lmstudio": {"base_url": "http://127.0.0.1:1234/v1", ...},    # LM Studio
 }
 ```
 
 Models are addressed as `provider:model`, with a fallback on a *different*
-provider so a single outage or rate limit cannot take the assistant down.
+provider so a single outage or rate limit cannot take the assistant down. Any
+error on the primary (rate limit, timeout, 5xx, dropped connection) switches to
+the fallback, and SDK retries are off, so the switch takes seconds rather than
+a minute of silence. Short, unambiguous commands ("пауза", "наступний трек",
+"котра година") skip the model entirely.
 
-**Mail triage as a separate module.** [`mail_triage.py`](mail_triage.py) classifies
-incoming mail into nine categories and archives the noise. It lives outside the
-main file so the rules can be edited and unit-tested without touching a running
-assistant. On a real mailbox it cut 5119 inbox messages down to 400, and only
-two categories are ever spoken aloud.
+Free tiers have daily limits. On gpt-oss-120b the daily token budget (200K) is
+likely to run out before the 1000 requests, because every request carries the
+whole system prompt (about 8.6K characters). [`usage.py`](raphael/usage.py) counts requests, tokens and seconds of
+audio per model per day (tokens as the provider reports them), warns once at
+80% and at 100%, and answers "скільки лімітів". It is a local estimate: the
+limits in `DAILY_LIMITS` are overridable in `config.json`.
+
+Actions come back as an `[ACTION:type:param]` tag in the reply text. With
+`"TOOL_CALLING": true` the model instead calls a single `do_action(type, param)`
+function; the call is turned into the same tag, so the same checks
+(dangerous actions need explicit intent, irreversible ones ask first) apply.
+It is off by default while it is being tried out.
+
+**Mail triage as a separate module.** [`mail_triage.py`](raphael/mail_triage.py) classifies
+incoming mail into eleven categories and archives the noise. It lives outside the
+main file so the rules can be edited and tested
+([`tests/test_mail_triage.py`](tests/test_mail_triage.py)) without touching a
+running assistant. On a real mailbox it cut 5119 inbox messages down to 400;
+seven categories are spoken aloud, the rest are labelled silently. Sender rules
+look at the address only, never the display name, so a spoofed
+`accounts.google.com <promo@spam.xyz>` is not read out as a security alert.
 
 The ordering of its checks is deliberate and documented in the module: security
 before money, money before noise (a failed payment notice arrives from a sender
 that is otherwise pure marketing), delivery before shops.
 
-**Resilience.** A watchdog restarts crashed components. Every external call is
-wrapped so that a dead API degrades one feature instead of killing the process.
+**Voice safety.** The assistant does not record while it is speaking, so it
+cannot hear itself or be driven by a mail subject it reads aloud. The wake word
+must be a whole word at the start or end of a phrase. Shutdown, restart,
+killing a process and clearing all plans always ask for a spoken yes, and a
+shutdown waits 30 seconds ("скасуй вимкнення" cancels it).
+
+**Character.** The first part of the system prompt is read from `persona.txt`
+on every request, so the personality can be rewritten while the assistant runs;
+the honesty rules and the action catalogue stay in code. Personal characters are
+git-ignored, [`persona.example.txt`](persona.example.txt) shows the format.
+[`vibes.py`](raphael/vibes.py) notices a running game (Steam, Epic, GOG folders
+or a known exe) and track changes in Spotify, drops a short line now and then
+(at most four an hour, never while speaking, listening or in focus mode), and
+tells the model what is playing so ordinary answers stay on topic.
+
+**Resilience.** `start.bat` restarts the process if it crashes; if it dies on
+start five times in a row it stops and points to `crash.log`, where startup
+tracebacks go under `pythonw`. Every external call is wrapped so that a dead API
+degrades one feature instead of killing the process.
 
 ## Running it
 
 ```bash
-pip install -r requirements.txt          # see the imports at the top of lin.py
-cp secrets.example.json secrets.json     # then fill in your own keys
+pip install -r requirements.txt          # or setup.bat
+cp secrets.example.json secrets.json     # Groq + Gemini keys, Spotify app
 python gmail_auth.py                     # Google OAuth, once
 python spotify_auth.py                   # Spotify OAuth, once
 python lin.py
 ```
 
+Settings live in `config.json` (models, hotkeys, thresholds). Keys never go
+there: that file is tracked, `secrets.json` is not.
+
+While the Google OAuth app is in Testing mode, its tokens expire after 7 days.
+Raphael then says which mailbox lost access (once a day, or whenever you ask
+about mail or the calendar). Run `gmail_auth.bat` again (`gmail_auth.bat 2` for
+the second mailbox) and the new token is picked up without a restart.
+
+**Offline.** Speech recognition already falls back to Vosk. To keep answering
+without internet, set `OFFLINE_MODEL` in `config.json` to a local Ollama model
+(for example `"local:gemma3:4b"` after `ollama pull gemma3:4b`): it is asked
+after both cloud models fail. The system prompt is about 3K tokens, so give the
+model a context of at least 8K (a Modelfile with `PARAMETER num_ctx 8192`),
+otherwise Ollama cuts the beginning of the prompt. For an offline voice, put `piper.exe` from the
+[Piper releases](https://github.com/rhasspy/piper/releases) and the
+`uk_UA-ukrainian_tts-medium.onnx` voice (with its `.onnx.json`) into a `piper/`
+folder next to `lin.py`; it speaks whenever edge-tts cannot be reached. Both
+are optional and off until the files are there.
+
+**Local models and voices.** `lmstudio:<model>` talks to the LM Studio server,
+so a local model can be the offline fallback or the main model
+(`GROQ_PRIMARY_MODEL`), with the cloud as the fallback. Reasoning blocks that
+some models write into the answer (`<think>`, `<thought>`) are removed before
+anything is spoken. `"TTS_ENGINE": "http"` sends speech to any local server with
+an OpenAI-compatible `/v1/audio/speech` (`TTS_HTTP_URL`, `TTS_HTTP_MODEL`,
+`TTS_HTTP_VOICE`); if it does not answer, the phrase still sounds through
+edge-tts.
+
+Liking tracks by voice ("лайкни") needs one extra Spotify permission. Tokens
+made before it keep working for everything else; run `spotify_auth.bat` once
+more to enable likes.
+
+Tests run on any OS: the pure logic (mail rules, wake word, reminders, command
+matching) directly, and the whole assistant on stubs of the Windows-only
+libraries (`tests/stubs.py`): confirmations, model fallback, the microphone
+ignoring the assistant's own speech, the mail monitor, Spotify token checks.
+
+```bash
+pytest
+```
+
 For offline speech recognition, download a Vosk Ukrainian model from
 [alphacephei.com/vosk/models](https://alphacephei.com/vosk/models) and unpack it
 into `vosk-model-uk/`. It is 128 MB, so it is not in this repository.
+With the model in place, `"WAKE_ENGINE": "vosk"` in `config.json` makes the
+wake word local as well: the name is spotted on the machine, and only phrases
+that contain it are sent to Whisper. If the model or the name in its
+vocabulary is missing, the assistant says so in the log and keeps using Whisper.
 
 `start_hidden.vbs` launches everything windowless through the watchdog.
 

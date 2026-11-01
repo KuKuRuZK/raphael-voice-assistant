@@ -22,17 +22,34 @@ HANDOFF.md
 lin.log
 watchdog.log
 *.log
+# Ротовані архіви (lin.log.1..3) не закінчуються на .log, і *.log їх не ловив:
+# git status показував їх як нові файли, готові до коміту
+*.log.*
 
 # Пам'ять і нотатки асистента, теж особисте
 memory.json
 notes.json
 notes_backup.json
+# Характери: там мати й особисте. Зразок формату лишається в репозиторії
+persona*.txt
+!persona.example.txt
+# лічильник денних лімітів моделей
+usage.json
+# тимчасові файли атомарного запису (notes.json.tmp тощо)
+*.tmp
+
+# Службові маркери watchdog (start.bat ↔ lin.py). crash.log ловить *.log вище
+.lin_stop
+.lin_alive
 
 # ── ВЕЛИКЕ І ЗГЕНЕРОВАНЕ ─────────────────────────────────────────────────────
 # Модель Vosk важить 128 МБ, її качають окремо з alphacephei.com
 vosk-model-uk/
+# Офлайн-голос: piper.exe і модель голосу, теж качаються окремо
+piper/
 __pycache__/
 *.pyc
+.pytest_cache/
 
 # Локальні налаштування інструментів
 .claude/

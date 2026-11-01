@@ -3,7 +3,7 @@
 
 Задача одна: у скриньці на один живий лист припадає приблизно сім розсилок,
 тому «є непрочитаний лист» як сигнал не працює. Тут листи розкладаються на
-пʼять категорій, і турбувати голосом можна лише двома з них.
+одинадцять категорій, і голосом Рафаель оголошує лише сім (ANNOUNCE).
 
 Категорії:
     шум       розсилки вакансій і реклама. Мітимо і прибираємо з вхідних.
@@ -11,6 +11,18 @@
     офіційне  установи: біржа праці, банки, міграційна. Мітимо, лишаємо, оголошуємо.
     живий     людина написала руками. Мітимо, лишаємо, оголошуємо.
     авто      машинний відправник, якого ще не знаємо. Мітимо, лишаємо, мовчимо.
+    події     квитки, мітапи. Мітимо, лишаємо, мовчимо.
+    гроші, безпека, робота, доставка   лише для основної скриньки, оголошуємо.
+    інфра     ключі, квоти, вимкнення сервісів (основна скринька). Оголошуємо.
+
+Чати (Discord, Telegram, TikTok) ідуть у шум: їх читають у самому застосунку.
+Реклама від банків теж шум, хоча відправник фінансовий.
+
+Правила по відправнику дивляться ЛИШЕ на адресу, не на імʼя: імʼя в полі From
+кожен пише яке хоче, і «accounts.google.com <promo@spam.xyz>» ставав «безпекою»
+й зачитувався вголос.
+
+Тести: tests/test_mail_triage.py. Нове правило = новий рядок у тесті.
 
 «авто» це навмисний відстійник: туди падає все нерозпізнане машинне, і час від
 часу варто туди зазирнути та дописати правило сюди.
@@ -18,11 +30,15 @@
 Модуль не знає про Gmail нічого зайвого: сервіс передається ззовні.
 """
 import re
+from email.utils import parseaddr
 
 # ── категорії ─────────────────────────────────────────────────────────────────
 NOISE, APPLIED, OFFICIAL, HUMAN, AUTO = "шум", "подача", "офіційне", "живий", "авто"
 # Додано для основної скриньки: там життя, а не тільки пошук роботи
 MONEY, SECURITY, WORK, DELIVERY, EVENT = "гроші", "безпека", "робота", "доставка", "події"
+# Ключі, квоти, вимкнення сервісів. Окремо від «безпеки», бо це не злам,
+# а «завтра щось перестане працювати», і реагувати треба інакше.
+INFRA = "інфра"
 
 LABELS = {
     NOISE:    "Трекер/Шум",
@@ -35,10 +51,11 @@ LABELS = {
     WORK:     "Трекер/Робота",
     DELIVERY: "Трекер/Доставка",
     EVENT:    "Трекер/Події",
+    INFRA:    "Трекер/Інфра",
 }
 
 # Про що Рафаель говорить уголос
-ANNOUNCE = {HUMAN, OFFICIAL, MONEY, SECURITY, WORK, DELIVERY}
+ANNOUNCE = {HUMAN, OFFICIAL, MONEY, SECURITY, WORK, DELIVERY, INFRA}
 
 # Що прибираємо з вхідних (архів, не кошик: лист лишається знайденим через пошук)
 ARCHIVE = {NOISE}
@@ -61,7 +78,8 @@ _SECURITY_FROM = re.compile(
 _SECURITY_SUBJ = re.compile(
     r"security alert|сповіщення системи безпеки|critical security"
     r"|new sign-?in|new device|підозріл|suspicious|unusual activity"
-    r"|verification code|код підтвердження|password (was )?changed|змінено пароль",
+    r"|verification code|код підтвердження|код подтверждения|kodas"
+    r"|password (was )?changed|змінено пароль",
     re.I)
 
 # Фінансові відправники: від них навіть маркетинг краще побачити
@@ -70,8 +88,12 @@ _MONEY_FROM = re.compile(
     r"|googleplay-noreply@google|@n26\.com|@monobank|@privatbank"
     r"|e-faktura@|@pl\.orange\.com",            # рахунки Orange Польща
     re.I)
+# Без голих «declined» і «unsuccessful»: так пишуть і відмови на вакансії
+# («your application was unsuccessful»), і календар («Invitation declined»).
+# «payment unsuccessful» від Netflix ловиться словом «payment».
 _MONEY_SUBJ = re.compile(
-    r"payment|invoice|receipt|billing|charged|refund|declined|unsuccessful"
+    r"payment|invoice|receipt|billing|charged|refund"
+    r"|(card|transaction) (was |has been )?declined"
     r"|квитанц|рахунок|оплат|списан|платіж|повернення кошт"
     r"|mok[eė]jim|s[ąa]skait"                            # литовською
     r"|order .{0,20}(cancel|confirm)|замовлення .{0,20}(скасован|підтвердж)",
@@ -88,9 +110,16 @@ _DELIVERY = re.compile(
     re.I)
 # Перевіряється РАНІШЕ за магазини, тому «your order has shipped» від Temu
 # піде в доставку, а не в шум. Це навмисно: посилка реальна, реклама ні.
+# «відправлен» лише поруч із замовленням: інакше «Ваше резюме відправлено»
+# ставало доставкою
 _DELIVERY_SUBJ = re.compile(
-    r"siunt|посилк|відправлен|shipment|has shipped|order shipped"
+    r"siunt|посилк|замовлення\W+(\w+\W+){0,3}?відправлен|shipment|has shipped|order shipped"
     r"|tracking number|out for delivery|delivered|į paštomat",
+    re.I)
+# Відбійники пошти: «message not delivered» не посилка
+_BOUNCE_SUBJ = re.compile(
+    r"delivery status notification|undeliver|not (been )?delivered|failure notice"
+    r"|mail delivery (failed|subsystem)|returned mail|nepristatyt",
     re.I)
 
 _EVENT = re.compile(r"eventbrite|@lzka\.lt|@meetup\.com|@email\.meetup\.com", re.I)
@@ -113,13 +142,39 @@ _SHOP = re.compile(
     r"|info@twitter\.com|verify@twitter\.com|@redditmail\.com|@facebookmail\.com"
     r"|@pinterest\.com|@explore\.pinterest|@discover\.pinterest|@inspire\.pinterest"
     r"|@ideas\.pinterest|noreply@olx\.ua|@aruodas\.lt|@vseosvita\.ua|@obuchenie\.com\.ua"
-    r"|@email\.forbes\.com|forbes@|@bolt\.eu|@bolt-food\.net|receipts@bolt"
+    r"|forbes\.com|@bolt\.eu|@bolt-food\.net|receipts@bolt"
     r"|@rides-marketing\.bolt|@delivery-partner-marketing\.bolt"
     r"|seaofthieves@microsoft|@info\.spark\.lt|@mail\.adobe\.com|@ryanairemail\.com"
     r"|hq@pleso\.me|@dmarket\.com|hello@lemongym\.lt|@email\.jysk\.lt"
     r"|@notify\.gta5rp\.com|hello@chess\.com|@multiplex\.ua|@ua\.goit\.global"
     r"|@n\.dribbble\.com|@mail\.ultimate-guitar\.com|no-reply@vinted\.lt"
     r"|@wolt\.com|@zalando|@shopifyemail\.com|@service-mail\.zalando",
+    re.I)
+
+
+# Інфраструктура: ключі, квоти, вимкнення сервісів, від яких залежить робота.
+# Причина появи: 2026-08-26 Groq попередив, що ключ Рафаеля помре 2 вересня.
+# Лист потрапив у «авто», тобто в мовчазну категорію, і Влад дізнався про це
+# випадково, за день до смерті ключа. Це не безпека і не гроші, це «завтра
+# щось перестане працювати», і мовчати про таке не можна.
+_INFRA_FROM = re.compile(
+    r"@groq\.co|@openai\.com|@anthropic\.com|@github\.com|@netlify\.com"
+    r"|@obsidian\.md|cloudshell@google|@digitalocean|@heroku|@vercel"
+    r"|@cloud\.google\.com|@aws\.amazon\.com|@spotify\.com",
+    re.I)
+_INFRA_SUBJ = re.compile(
+    r"api key|action required|will expire|expiring|expired|deprecat|decommission"
+    r"|quota|rate limit|suspend|shutting down|end of life|sunset"
+    r"|deletion notice|termination|billing issue"
+    r"|ключ.{0,12}застар|термін дії",
+    re.I)
+
+# Маркетинг від фінансових відправників. Revolut шле по вісім рекламних листів
+# на два справжніх, і всі вони падали в «гроші», бо відправник фінансовий.
+_MONEY_ADS = re.compile(
+    r"earn €|earn \$|refer a friend|for each friend|revpoints|cashback offer"
+    r"|private markets|have arrived|unlocked free|get more|hassle-free"
+    r"|запросіть друга|отримуйте зарплату|забудьте про",
     re.I)
 
 
@@ -143,7 +198,8 @@ _HUMAN_HINT = re.compile(
 # Чати, де Влад і так читає повідомлення в самому застосунку. Формально там теж
 # «людина надіслала повідомлення», але будити голосом через кожен Discord-DM
 # безглуздо. Виняток із _HUMAN_HINT, а не окрема категорія.
-_CHAT_APP = re.compile(r"@discord\.com|@telegram|@viber|@slack\.com|@mail\.instagram", re.I)
+_CHAT_APP = re.compile(r"@discord\.com|@telegram|@viber|@slack\.com|@mail\.instagram"
+                       r"|tiktok|@messenger", re.I)
 
 # Автопідтвердження поданої заявки
 _APPLIED = re.compile(
@@ -211,11 +267,15 @@ _ATS = re.compile(
 # замовчуванням, інакше в основній скриньці такий лист падав би в «авто».
 _FREEMAIL = re.compile(
     r"@(gmail|googlemail|outlook|hotmail|live|yahoo|proton(mail)?|icloud|gmx)\."
-    r"|@(ukr\.net|i\.ua|meta\.ua|mail\.ru|yandex\.)",
+    r"|@(ukr\.net|i\.ua|meta\.ua|mail\.ru|yandex\.)"
+    # wp.pl, o2.pl, interia: польські служби. З wp.pl пише батько,
+    # і його листи через це падали в «авто» замість «живий».
+    r"|@(wp\.pl|o2\.pl|interia\.pl|onet\.pl|gazeta\.pl)",
     re.I)
 
 # Машинні відправники, яких ще не класифікували
-_MACHINE = re.compile(r"no-?reply|donotreply|neatsakyti|notification|noreply", re.I)
+_MACHINE = re.compile(r"no-?reply|donotreply|neatsakyti|notification|noreply"
+                      r"|mailer-daemon|postmaster", re.I)
 
 
 def classify(sender: str, subject: str, box: str = "офіційна") -> str:
@@ -229,22 +289,40 @@ def classify(sender: str, subject: str, box: str = "офіційна") -> str:
     наступний блок може перехопити лист у попереднього. Переставляти лише
     свідомо, з тестом.
     """
+    # Правила, від яких лист стає ГУЧНІШИМ, дивляться лише на адресу: імʼя у From
+    # підробляється як завгодно. Ознаки машини (noreply, notification) можна
+    # брати й з імені: від них лист лише тихшає.
+    raw = sender or ""
+    sender = parseaddr(raw)[1] or raw
+    subject = subject or ""
     if box == "основна":
         # Безпека найперша: пропустити лист про вхід у акаунт найдорожче
         if _SECURITY_FROM.search(sender) or _SECURITY_SUBJ.search(subject):
             return SECURITY
+        # Інфраструктура одразу за безпекою: «ключ помре завтра» коштує дорожче
+        # за будь-який рахунок. Потрібні ОБИДВІ умови, інакше сюди поїде вся
+        # реклама зі словом «expire».
+        if _INFRA_FROM.search(sender) and _INFRA_SUBJ.search(subject):
+            return INFRA
         # Гроші раніше за шум, бо «payment unsuccessful» приходить і від Netflix,
-        # який в іншому житті чистий магазин
+        # який в іншому житті чистий магазин. Але реклама банку це не гроші:
+        # Revolut шле вісім рекламних листів на два справжніх, і всі вони
+        # падали в «гроші» лише тому, що відправник фінансовий.
         if _MONEY_FROM.search(sender) or _MONEY_SUBJ.search(subject):
-            return MONEY
+            return NOISE if _MONEY_ADS.search(subject) else MONEY
         if _WORK.search(sender):
             return WORK
-        if _DELIVERY.search(sender) or _DELIVERY_SUBJ.search(subject):
+        if _DELIVERY.search(sender) or (_DELIVERY_SUBJ.search(subject)
+                                        and not _BOUNCE_SUBJ.search(subject)):
             return DELIVERY
 
     if _OFFICIAL.search(sender):
         return OFFICIAL
-    if _HUMAN_HINT.search(subject) and not _CHAT_APP.search(sender):
+    if _CHAT_APP.search(sender):
+        # Discord, TikTok, Telegram: повідомлення Влад читає в самому застосунку.
+        # Явний шум, а не «авто», інакше вони копичаться у вхідних без користі.
+        return NOISE
+    if _HUMAN_HINT.search(subject):
         return HUMAN
     if _APPLIED.search(subject):
         return APPLIED
@@ -259,9 +337,9 @@ def classify(sender: str, subject: str, box: str = "офіційна") -> str:
         return NOISE
     if _ATS.search(sender):
         return HUMAN
-    if _FREEMAIL.search(sender) and not _MACHINE.search(sender):
+    if _FREEMAIL.search(sender) and not _MACHINE.search(raw):
         return HUMAN
-    if _MACHINE.search(sender):
+    if _MACHINE.search(raw):
         return AUTO
     return FALLBACK.get(box, HUMAN)
 

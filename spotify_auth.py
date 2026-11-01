@@ -10,6 +10,8 @@ import sys
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
+from raphael import spotify_common
+
 # Ключі живуть у secrets.json, як і в lin.py. Раніше вони були зашиті прямо
 # сюди, і при публікації репозиторію client_secret став би відкритим назавжди.
 SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
@@ -26,7 +28,6 @@ def _secret(name: str) -> str:
 
 CLIENT_ID     = _secret("SPOTIFY_CLIENT_ID")
 CLIENT_SECRET = _secret("SPOTIFY_CLIENT_SECRET")
-REDIRECT_URI  = "http://127.0.0.1:8888/callback"
 
 if not CLIENT_ID or not CLIENT_SECRET:
     print("Немає SPOTIFY_CLIENT_ID або SPOTIFY_CLIENT_SECRET.")
@@ -44,21 +45,21 @@ print("Після цього браузер закриється сам.")
 print()
 
 try:
+    # Ті самі дозволи й той самий файл токена, що й у lin.py (spotify_common).
+    # Шлях абсолютний: раніше токен падав у поточну теку, звідки запустили скрипт.
     sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
         client_id=CLIENT_ID,
         client_secret=CLIENT_SECRET,
-        redirect_uri=REDIRECT_URI,
-        scope=(
-            "user-read-playback-state user-modify-playback-state "
-            "user-read-recently-played user-library-read"
-        ),
-        cache_path=".spotify_token",
+        redirect_uri=spotify_common.REDIRECT_URI,
+        scope=spotify_common.AUTH_SCOPES,
+        cache_path=spotify_common.TOKEN_PATH,
         open_browser=True,
     ))
 
     user = sp.current_user()
-    print(f"✅ Авторизація успішна!")
-    print(f"   Акаунт: {user['display_name']} ({user['email']})")
+    print("✅ Авторизація успішна!")
+    # email приходить лише з дозволом user-read-email, якого ми не просимо
+    print(f"   Акаунт: {user.get('display_name') or user.get('id', '?')}")
     print()
 
     devices = sp.devices().get("devices", [])

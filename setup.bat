@@ -2,23 +2,25 @@
 chcp 65001 >nul
 echo.
 echo  ╔══════════════════════════════════╗
-echo  ║   Встановлення залежностей Лін   ║
+echo  ║ Встановлення залежностей Рафаеля ║
 echo  ╚══════════════════════════════════╝
 echo.
 
-echo [1/3] Встановлення основних бібліотек...
-pip install edge-tts pygame SpeechRecognition psutil pyautogui pystray pillow groq spotipy
+echo [1/2] Встановлення бібліотек з requirements.txt...
+pip install -r "%~dp0requirements.txt"
+if errorlevel 1 (
+    echo.
+    echo  Щось не встановилось. Подивись помилку вище.
+    pause
+    exit /b 1
+)
 
 echo.
-echo [2/3] Встановлення PyAudio (потрібно для мікрофону)...
-pip install pyaudio
-
-echo.
-echo [3/3] Готово!
+echo [2/2] Готово!
 echo.
 echo  Що далі:
-echo  1. Запустіть start.bat
-echo  2. При першому запуску відкриється браузер для авторизації Spotify
-echo  3. Натисніть Allow — і все готово!
+echo  1. Скопіюйте secrets.example.json у secrets.json і впишіть ключі
+echo  2. Запустіть spotify_auth.bat і gmail_auth.bat (один раз)
+echo  3. Запустіть start_hidden.vbs
 echo.
 pause

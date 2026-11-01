@@ -5,6 +5,7 @@
   "VOICE_PITCH": "+3Hz",
   "CONFIRM_ACTIONS": true,
   "BRIEFING_HOUR": 9,
+  "CALENDAR_REMIND_MINUTES": 10,
 
   "PUSH_TO_TALK": false,
   "PTT_HOTKEY": "ctrl+alt+m",
@@ -34,5 +35,8 @@
 
   "GROQ_PRIMARY_MODEL": "openai/gpt-oss-120b",
   "GROQ_FALLBACK_MODEL": "gemini:gemini-3.1-flash-lite",
-  "VISION_MODEL": "gemini:gemini-3.1-flash-lite"
+  "FAST_MODEL": "",
+  "VISION_MODEL": "gemini:gemini-3.1-flash-lite",
+
+  "WAKE_ENGINE": "whisper"
 }
