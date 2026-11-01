@@ -1,4 +1,4 @@
-# Рафаель — Ukrainian voice assistant for Windows
+# Рафаель: Ukrainian voice assistant for Windows
 
 A desktop voice assistant that listens in Ukrainian, understands free-form
 commands through an LLM, and acts: plays music, reads and triages mail, checks
@@ -15,14 +15,15 @@ Personal project, built and used daily.
 |---|---|
 | **Voice** | wake word or hotkey, ~140 commands, free-form phrasing routed by an LLM |
 | **Speech in** | Whisper → Google → Vosk fallback chain, Vosk works fully offline |
-| **Speech out** | neural TTS (edge-tts), Ukrainian voice; Piper as an offline voice if installed |
-| **Mail** | two Gmail accounts, 10-category triage, only what matters is spoken aloud |
+| **Speech out** | edge-tts, Piper, or any local TTS server with an OpenAI-compatible API, with fallback between them |
+| **Mail** | two Gmail accounts, 11-category triage, only what matters is spoken aloud |
 | **Calendar** | today / tomorrow / week, new events by voice, a spoken reminder 10 minutes before each event |
 | **Music** | full Spotify control |
 | **Vision** | screenshots described by a vision model on request |
 | **Dictation** | speaks into the cursor, or straight into an Obsidian vault |
 | **Second brain** | searches a personal Obsidian vault and answers from it |
 | **System** | CPU / RAM / disk / battery monitoring with spoken warnings |
+| **Character** | personality from a plain text file, edited live; notices games and music and comments on its own |
 
 ## How it is put together
 
@@ -44,7 +45,8 @@ them is a one-line config change:
 LLM_PROVIDERS = {
     "groq":   {"base_url": "https://api.groq.com/openai/v1",  ...},
     "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", ...},
-    "local":  {"base_url": "http://127.0.0.1:11434/v1", ...},
+    "local":    {"base_url": "http://127.0.0.1:11434/v1", ...},   # Ollama
+    "lmstudio": {"base_url": "http://127.0.0.1:1234/v1", ...},    # LM Studio
 }
 ```
 
@@ -69,11 +71,11 @@ function; the call is turned into the same tag, so the same checks
 It is off by default while it is being tried out.
 
 **Mail triage as a separate module.** [`mail_triage.py`](raphael/mail_triage.py) classifies
-incoming mail into ten categories and archives the noise. It lives outside the
+incoming mail into eleven categories and archives the noise. It lives outside the
 main file so the rules can be edited and tested
 ([`tests/test_mail_triage.py`](tests/test_mail_triage.py)) without touching a
 running assistant. On a real mailbox it cut 5119 inbox messages down to 400;
-six categories are spoken aloud, the rest are labelled silently. Sender rules
+seven categories are spoken aloud, the rest are labelled silently. Sender rules
 look at the address only, never the display name, so a spoofed
 `accounts.google.com <promo@spam.xyz>` is not read out as a security alert.
 
@@ -86,6 +88,15 @@ cannot hear itself or be driven by a mail subject it reads aloud. The wake word
 must be a whole word at the start or end of a phrase. Shutdown, restart,
 killing a process and clearing all plans always ask for a spoken yes, and a
 shutdown waits 30 seconds ("скасуй вимкнення" cancels it).
+
+**Character.** The first part of the system prompt is read from `persona.txt`
+on every request, so the personality can be rewritten while the assistant runs;
+the honesty rules and the action catalogue stay in code. Personal characters are
+git-ignored, [`persona.example.txt`](persona.example.txt) shows the format.
+[`vibes.py`](raphael/vibes.py) notices a running game (Steam, Epic, GOG folders
+or a known exe) and track changes in Spotify, drops a short line now and then
+(at most four an hour, never while speaking, listening or in focus mode), and
+tells the model what is playing so ordinary answers stay on topic.
 
 **Resilience.** `start.bat` restarts the process if it crashes; if it dies on
 start five times in a row it stops and points to `crash.log`, where startup
@@ -120,6 +131,15 @@ otherwise Ollama cuts the beginning of the prompt. For an offline voice, put `pi
 `uk_UA-ukrainian_tts-medium.onnx` voice (with its `.onnx.json`) into a `piper/`
 folder next to `lin.py`; it speaks whenever edge-tts cannot be reached. Both
 are optional and off until the files are there.
+
+**Local models and voices.** `lmstudio:<model>` talks to the LM Studio server,
+so a local model can be the offline fallback or the main model
+(`GROQ_PRIMARY_MODEL`), with the cloud as the fallback. Reasoning blocks that
+some models write into the answer (`<think>`, `<thought>`) are removed before
+anything is spoken. `"TTS_ENGINE": "http"` sends speech to any local server with
+an OpenAI-compatible `/v1/audio/speech` (`TTS_HTTP_URL`, `TTS_HTTP_MODEL`,
+`TTS_HTTP_VOICE`); if it does not answer, the phrase still sounds through
+edge-tts.
 
 Liking tracks by voice ("лайкни") needs one extra Spotify permission. Tokens
 made before it keep working for everything else; run `spotify_auth.bat` once
