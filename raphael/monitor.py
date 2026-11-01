@@ -17,6 +17,9 @@ log = logging.getLogger("Лін")
 _MONITOR = {"gmail": False, "slack": False}   # які монітори увімкнені
 _monitor_primed = {"gmail": False, "slack": False}   # перший прохід — без спаму
 
+TRIAGE_SWEEP_EVERY = 5     # домічувати прочитане кожні N перевірок (~10 хв)
+_sweep_tick = 0
+
 
 def _monitor_toggle(target: str, on: bool) -> None:
     """Вмикає/вимикає монітор пошти, слаку або системи."""
@@ -67,11 +70,18 @@ def monitor_loop():
         _MONITOR["gmail"] = True
     log.info(f"Monitor loop запущено (пошта: {'увімкнена' if _MONITOR['gmail'] else 'вимкнена'}, "
              f"сортування: {'так' if cfg.MAIL_TRIAGE_ENABLED and mail_triage else 'ні'})")
+    global _sweep_tick
     while True:
         time.sleep(cfg.MONITOR_INTERVAL)
         try:
             # ── Gmail ──
             if _MONITOR["gmail"]:
+                # Домічування прочитаного йде окремо від оголошення нового
+                _sweep_tick += 1
+                if _sweep_tick % TRIAGE_SWEEP_EVERY == 0:
+                    n = gmail._gmail_triage_sweep()
+                    if n:
+                        log.info(f"Домічено листів, прочитаних до перевірки: {n}")
                 new_mail = gmail._gmail_check_new()
                 warning = gmail.auth_warning(daily=True)
                 if warning:

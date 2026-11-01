@@ -632,6 +632,46 @@ def _gmail_draft_reply(query: str, reply_text: str) -> None:
 # ============================================================
 
 @_one_at_a_time
+def _gmail_triage_sweep(limit: int = 60) -> int:
+    """
+    Домічує вхідні листи, яких монітор не побачив. Повертає, скільки помічено.
+
+    Навіщо окремо: монітор шукає за labelIds=["UNREAD","INBOX"], тобто бачить
+    ЛИШЕ непрочитане. Це правильно для «оголоси новий лист», але не для
+    «розклади по мітках»: якщо Влад відкрив лист у Gmail раніше, ніж настала
+    перевірка, лист переставав бути непрочитаним і лишався без мітки назавжди.
+
+    Тут беремо ВСІ вхідні й мітимо ті, у яких мітки Трекер/* ще немає. Голосом
+    нічого не кажемо: Влад ці листи вже бачив.
+    """
+    if not (cfg.MAIL_TRIAGE_ENABLED and mail_triage):
+        return 0
+    done = 0
+    for label, svc in _gmail_accounts():
+        try:
+            box = _gmail_box(label)
+            token_path = _token_for(label)
+            known = set(_triage_labels(svc, token_path).values())
+            res = svc.users().messages().list(
+                userId="me", labelIds=["INBOX"], maxResults=limit
+            ).execute()
+            for m in res.get("messages", []):
+                full = svc.users().messages().get(
+                    userId="me", id=m["id"], format="metadata",
+                    metadataHeaders=["From", "Subject"]
+                ).execute()
+                if known & set(full.get("labelIds", [])):
+                    continue                      # вже помічений, не чіпаємо
+                h = _gmail_headers(full)
+                if _gmail_triage(svc, token_path, m["id"],
+                                 h.get("From", ""), h.get("Subject", ""), box):
+                    done += 1
+        except Exception as e:
+            _account_error(label, "домічування", e)
+    return done
+
+
+@_one_at_a_time
 def _gmail_check_new() -> list:
     """Повертає НОВІ непрочитані листи (label, sender, subject) з усіх скриньок."""
     accounts = _gmail_accounts()
