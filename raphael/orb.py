@@ -20,6 +20,13 @@ try:
     from ctypes import wintypes
     AVAILABLE = (__import__("os").name == "nt")
 except Exception:
+    # Імена оголошуємо й у невдалій гілці. Інакше вони лишаються неоголошеними,
+    # і будь-який аналізатор (Pylance, pyright) підсвічує кожне їх використання
+    # нижче: 60 зауважень на порожньому місці. На роботу це не впливало, бо
+    # модуль вмикається лише коли AVAILABLE=True, але червоний файл заважає
+    # побачити справжні помилки.
+    Image = ImageDraw = ImageFilter = ImageFont = ImageChops = None
+    ctypes = wintypes = None
     AVAILABLE = False
 
 # ── Параметри рендера ─────────────────────────────────────────────────────────
