@@ -22,11 +22,17 @@ HANDOFF.md
 lin.log
 watchdog.log
 *.log
+# Ротовані архіви (lin.log.1..3) не закінчуються на .log, і *.log їх не ловив:
+# git status показував їх як нові файли, готові до коміту
+*.log.*
 
 # Пам'ять і нотатки асистента, теж особисте
 memory.json
 notes.json
 notes_backup.json
+# Характери: там мати й особисте. Зразок формату лишається в репозиторії
+persona*.txt
+!persona.example.txt
 # лічильник денних лімітів моделей
 usage.json
 # тимчасові файли атомарного запису (notes.json.tmp тощо)
