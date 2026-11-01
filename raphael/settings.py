@@ -199,6 +199,17 @@ TOOL_CALLING = False
 PIPER_EXE   = os.path.join(_ROOT, "piper", "piper.exe")
 PIPER_MODEL = os.path.join(_ROOT, "piper", "uk_UA-ukrainian_tts-medium.onnx")
 
+# ── Голос ─────────────────────────────────────────────────────────────────────
+# TTS_ENGINE: "edge" (Microsoft, VOICE вище), "piper" (офлайн, PIPER_*) або
+# "http": будь-який локальний сервер з OpenAI-сумісним /v1/audio/speech
+# (Kokoro-FastAPI, openedai-speech, обгортки F5-TTS чи StyleTTS2 тощо).
+# Якщо обраний двигун не відповів, фраза звучить через edge-tts, далі Piper:
+# краще знайомий голос, ніж тиша.
+TTS_ENGINE     = "edge"
+TTS_HTTP_URL   = "http://127.0.0.1:8880/v1/audio/speech"
+TTS_HTTP_MODEL = ""     # що сервер чекає в полі model ("" = не передавати)
+TTS_HTTP_VOICE = ""     # голос на сервері ("" = його типовий)
+
 # ── Денні ліміти безкоштовного рівня (для попереджень і «скільки лімітів») ──
 # Ключ «провайдер:модель». Значення з таблиць Groq і Gemini на момент запису;
 # свої дивись на console.groq.com/settings/limits і в Google AI Studio, а
@@ -292,7 +303,7 @@ def _load_config():
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
         "FAST_MODEL", "WAKE_ENGINE", "BRAIN_VAULT",
         "OFFLINE_MODEL", "PIPER_EXE", "PIPER_MODEL", "TOOL_CALLING",
-        "PERSONA_FILE",
+        "PERSONA_FILE", "TTS_ENGINE", "TTS_HTTP_URL", "TTS_HTTP_MODEL", "TTS_HTTP_VOICE",
         "VIBE_ENABLED", "VIBE_INTERVAL", "VIBE_MAX_PER_HOUR", "VIBE_GAME_EVERY_MIN",
         "VIBE_MUSIC_CHANCE", "VIBE_MUSIC_MIN_GAP_MIN", "VIBE_GAME_EXES", "VIBE_GAME_IGNORE",
     ]

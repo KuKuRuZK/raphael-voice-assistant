@@ -1,10 +1,12 @@
 """
-Озвучка: edge-tts, кеш коротких фраз, швидкість голосу.
+Озвучка: edge-tts, Piper або локальний TTS-сервер (TTS_ENGINE), кеш коротких
+фраз, швидкість голосу.
 
 Поки грає озвучка, піднятий _tts_active, і stt.listen() мікрофон не пише.
 """
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import queue
@@ -13,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.request
 
 import edge_tts
 import pygame
@@ -186,12 +189,57 @@ def _tts_play(path: str):
     pygame.mixer.music.unload()
 
 
+# ── Локальний TTS-сервер (TTS_ENGINE = "http") ───────────────────────────────
+# OpenAI-сумісний /v1/audio/speech: так говорить більшість локальних серверів,
+# тож новий голос це правка config.json, а не нового коду. Після збою сервер
+# хвилину не чіпаємо, як і edge-tts.
+HTTP_TTS_TIMEOUT = 30
+_http_down_until = 0.0
+
+
+def _http_audio(text: str) -> str:
+    """wav від локального TTS-сервера."""
+    body = {"input": text, "response_format": "wav"}
+    if cfg.TTS_HTTP_MODEL:
+        body["model"] = cfg.TTS_HTTP_MODEL
+    if cfg.TTS_HTTP_VOICE:
+        body["voice"] = cfg.TTS_HTTP_VOICE
+    req = urllib.request.Request(cfg.TTS_HTTP_URL, data=json.dumps(body).encode("utf-8"),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=HTTP_TTS_TIMEOUT) as resp:
+        audio = resp.read()
+    if not audio:
+        raise RuntimeError("TTS-сервер повернув порожнє аудіо")
+    fd, tmp = tempfile.mkstemp(suffix=".wav")
+    with os.fdopen(fd, "wb") as f:
+        f.write(audio)
+    return tmp
+
+
+def _engine_audio(text: str):
+    """Аудіо від обраного TTS_ENGINE, якщо це не edge. None → іти звичним шляхом."""
+    global _http_down_until
+    if cfg.TTS_ENGINE == "piper" and _piper_ready():
+        return _piper_audio(text)
+    if cfg.TTS_ENGINE == "http" and cfg.TTS_HTTP_URL and time.monotonic() >= _http_down_until:
+        try:
+            return _http_audio(text)
+        except Exception as e:
+            _http_down_until = time.monotonic() + EDGE_RETRY_AFTER
+            log.warning(f"TTS-сервер {cfg.TTS_HTTP_URL} не відповів ({type(e).__name__}: {e}), "
+                        f"хвилину говорю через edge-tts")
+    return None
+
+
 def _tts_audio(text: str) -> tuple:
     """
-    Аудіо для фрази: з кешу, щойно синтезоване edge-tts або, без інтернету,
-    офлайн-голосом Piper. → (шлях, чи тимчасовий файл)
+    Аудіо для фрази: від обраного TTS_ENGINE, з кешу, щойно синтезоване
+    edge-tts або, без інтернету, офлайн-голосом Piper. → (шлях, чи тимчасовий файл)
     """
     global _edge_down_until
+    own = _engine_audio(text)
+    if own:
+        return own, True
     cached = _tts_cache_path(text)
     if cached and os.path.exists(cached):
         try:
