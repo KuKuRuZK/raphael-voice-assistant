@@ -183,6 +183,8 @@ USAGE_PATH  = os.path.join(SCRIPT_DIR, "usage.json")    # лічильник д�
 # модель і голос. Обидва необовʼязкові: чого немає, того просто не пробуємо.
 # OFFLINE_MODEL: модель Ollama, яку питати, коли не відповіли ні основна, ні
 #   резервна. Напр. "local:gemma3:4b" (спершу ollama pull gemma3:4b). "" = ні.
+#   Модель із сервера LM Studio: "lmstudio:google/gemma-4-26b-a4b-qat". Так само
+#   локальну можна поставити основною (GROQ_PRIMARY_MODEL), хмара тоді резерв.
 # PIPER_EXE / PIPER_MODEL: офлайн-голос Piper, коли edge-tts недоступний.
 #   piper.exe з github.com/rhasspy/piper/releases, голос
 #   uk_UA-ukrainian_tts-medium.onnx разом з .onnx.json з

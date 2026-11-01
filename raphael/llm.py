@@ -48,12 +48,68 @@ LLM_PROVIDERS = {
                "key_name": "GROQ_API_KEY"},
     "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/",
                "key_name": "GEMINI_API_KEY"},
-    # Локальна модель (OFFLINE_MODEL). Ollama слухає 11434, LM Studio 1234.
-    # Таймаут довший: на процесорі модель читає великий системний промт повільно.
+    # Локальні моделі (OFFLINE_MODEL або навіть основна): local: це Ollama,
+    # lmstudio: це сервер LM Studio (lms server start). Таймаут довший: перше
+    # читання великого системного промту локальною моделлю повільне.
     "local":  {"base_url": "http://127.0.0.1:11434/v1",
                "key_name": "", "key_default": "ollama", "timeout": 60},
+    "lmstudio": {"base_url": "http://127.0.0.1:1234/v1",
+                 "key_name": "", "key_default": "lm-studio", "timeout": 60},
 }
+LOCAL_PROVIDERS = ("local:", "lmstudio:")
 _llm_clients = {}
+
+
+def _is_local(model: str) -> bool:
+    return (model or "").startswith(LOCAL_PROVIDERS)
+
+
+# ── Роздуми вголос ────────────────────────────────────────────────────────────
+# Gemma 4 через Gemini API і частина локальних моделей пишуть міркування прямо
+# у відповідь: <thought>...</thought> або <think>...</think>, англійською і на
+# тисячі символів. Рафаель зачитав би їх уголос (знайдено на тесті 2026-10-12).
+_THINK_OPEN = re.compile(r"<(think|thought|thinking|reasoning)>", re.I)
+_THINK_BLOCK = re.compile(r"<(think|thought|thinking|reasoning)>.*?(</\1>|\Z)", re.I | re.S)
+_THINK_TAGS = ("<think>", "<thought>", "<thinking>", "<reasoning>")
+
+
+def strip_thinking(text):
+    """Прибирає блоки міркувань; недописаний блок (обрізаний лімітом) теж."""
+    if not text or "<" not in text:
+        return text
+    return _THINK_BLOCK.sub("", text).strip()
+
+
+def _without_thinking(pieces):
+    """Те саме для потоку: тег може бути розрізаний між шматками."""
+    buf, closing = "", None
+    for piece in pieces:
+        buf += piece
+        while buf:
+            if closing:
+                end = buf.lower().find(closing)
+                if end < 0:
+                    buf = buf[-(len(closing) - 1):]    # можливий початок закривального тегу
+                    break
+                buf, closing = buf[end + len(closing):].lstrip(), None
+                continue
+            m = _THINK_OPEN.search(buf)
+            if m:
+                if buf[:m.start()]:
+                    yield buf[:m.start()]
+                buf, closing = buf[m.end():], f"</{m.group(1).lower()}>"
+                continue
+            lt = buf.rfind("<")
+            if lt >= 0 and any(t.startswith(buf[lt:].lower()) for t in _THINK_TAGS):
+                if lt:
+                    yield buf[:lt]
+                buf = buf[lt:]                         # чекаємо, чи це не тег
+            else:
+                yield buf
+                buf = ""
+            break
+    if buf and not closing:
+        yield buf
 
 # Таймаут одного запиту до моделі. Повтори SDK вимкнені (max_retries=0): за
 # замовчуванням openai робить ще 2 спроби, і на мертвому провайдері це до
@@ -91,7 +147,7 @@ class LLMUnavailable(Exception):
     def rate_limited(self) -> bool:
         # Помилка локальної моделі (Ollama не запущена) не має ховати, що
         # хмарні моделі вперлись у ліміт
-        online = [e for m, e in self.errors if not m.startswith("local:")]
+        online = [e for m, e in self.errors if not _is_local(m)]
         return bool(online) and all(_is_rate_limit(e) for e in online)
 
 
@@ -145,11 +201,16 @@ def _usage_tokens(obj) -> int:
 
 def _llm_call(model: str, messages, **kw):
     cli, bare = _llm(model)
-    if model.startswith("local:"):
+    if _is_local(model):
         kw.pop("tools", None)             # локальні моделі функцій часто не вміють
     resp = cli.chat.completions.create(model=bare, messages=messages,
                                        **_model_kwargs(bare), **kw)
     usage.record(model, tokens=_usage_tokens(resp))
+    for choice in getattr(resp, "choices", None) or []:
+        msg = getattr(choice, "message", None)
+        content = getattr(msg, "content", None)
+        if content and "<" in content:
+            msg.content = strip_thinking(content)
     return resp
 
 
@@ -201,7 +262,7 @@ def llm_stream(model: str, messages, fallback=None, **kw):
         stream = cli.chat.completions.create(
             model=bare, messages=messages, stream=True, **_model_kwargs(bare), **kw)
         usage.record(m)
-        pieces = _stream_text(stream, m)
+        pieces = _without_thinking(_stream_text(stream, m))
         return next(pieces, ""), pieces   # чекаємо перший шматок тексту
 
     candidates, errors = _candidates(model, fallback), []
