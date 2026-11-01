@@ -208,6 +208,12 @@ def _wait_tts_quiet():
 
 
 _mic_calibrated = False   # калібруємо мікрофон лише раз
+# Помилки listen() поспіль. Коли навушники відключені, мікрофона просто немає,
+# і кожна спроба падала з повним traceback раз на секунду: 52 рядки помилок за
+# хвилину в lin.log 2026-10-30. Тепер пауза росте до LISTEN_BACKOFF_MAX, а в
+# лог іде перша помилка, кілька нагадувань і повернення мікрофона.
+_listen_failures = 0
+LISTEN_BACKOFF_MAX = 30
 
 
 def _transcribe(audio) -> str:
@@ -236,7 +242,7 @@ def listen(timeout=30, phrase_limit=20, passive=False) -> str:
     вікна не змінюємо: «Слухаю» світиться лише тоді, коли Рафаель справді
     чекає команду, і на екран не виводиться все, що сказали поруч.
     """
-    global _mic_calibrated
+    global _mic_calibrated, _listen_failures
     show = bool(runtime.LIN_UI) and not passive
     if show:
         runtime.LIN_UI.safe_set_state("listening")
@@ -250,6 +256,9 @@ def listen(timeout=30, phrase_limit=20, passive=False) -> str:
                 if not _mic_calibrated:
                     recognizer.adjust_for_ambient_noise(source, duration=0.5)
                     _mic_calibrated = True
+                if _listen_failures:
+                    log.info(f"Мікрофон знову працює (після {_listen_failures} помилок поспіль)")
+                    _listen_failures = 0
                 try:
                     audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_limit)
                 except sr.WaitTimeoutError:
@@ -273,9 +282,18 @@ def listen(timeout=30, phrase_limit=20, passive=False) -> str:
         return text
 
     except Exception as e:
-        log.error(f"listen() помилка: {e}", exc_info=True)
+        _listen_failures += 1
+        if _listen_failures == 1:
+            log.error(f"listen() помилка: {e}", exc_info=True)
+        elif _listen_failures in (10, 100) or _listen_failures % 1000 == 0:
+            log.warning(f"listen() досі падає, {_listen_failures} разів поспіль: {e}")
+        else:
+            log.debug(f"listen() помилка: {e}")
+        # Інший мікрофон, що зʼявиться замість зниклого, треба відкалібрувати заново
+        _mic_calibrated = False
         if show: runtime.LIN_UI.safe_set_state("idle")
-        time.sleep(1)   # без мікрофона цикл інакше крутився б без паузи, забиваючи лог
+        # Без мікрофона цикл інакше крутився б без паузи: 1, 2, 4 ... 30 с
+        time.sleep(min(LISTEN_BACKOFF_MAX, 2 ** min(_listen_failures - 1, 5)))
         return ""
 
 
