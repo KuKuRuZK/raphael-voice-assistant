@@ -41,8 +41,10 @@ CASES = [
     (OFFICIAL_BOX, "LinkedIn <jobalerts-noreply@linkedin.com>", "New jobs matching you", mt.NOISE),
     # У notion.so відправники з людськими іменами пролазили в «живий»
     (OFFICIAL_BOX, "Sophie <sophie@mail.notion.so>", "Quick question", mt.NOISE),
-    # DM у Discord не будить голосом, хоч формально «людина написала»: тихе «авто»
-    (OFFICIAL_BOX, "Discord <noreply@discord.com>", "Anna just messaged you", mt.AUTO),
+    # DM у Discord не будить голосом, хоч формально «людина написала». Чати
+    # читаються в самому застосунку, тож лист прибирається з вхідних як шум
+    (OFFICIAL_BOX, "Discord <noreply@discord.com>", "Anna just messaged you", mt.NOISE),
+    (MAIN, "TikTok <noreply@account.tiktok.com>", "Anna sent you a message", mt.NOISE),
     (OFFICIAL_BOX, "Unknown <hello@startup.io>", "Hi", mt.HUMAN),     # офіційна: незнайоме = людина
     (MAIN, "Unknown <hello@startup.io>", "Hi", mt.AUTO),              # основна: незнайоме = магазин
 
@@ -58,6 +60,21 @@ CASES = [
     # Підроблене імʼя: адреса чужа, тож це не «безпека» і не зачитується
     (MAIN, "accounts.google.com <promo@spam-domain.xyz>", "Hi", mt.AUTO),
     (MAIN, "Revolut Support <help@phish.example>", "Hello", mt.AUTO),
+
+    # ── Інфраструктура, 2026-09-01 ──
+    # Лист Groq про смерть ключа 2 вересня впав у мовчазне «авто»
+    (MAIN, "Groq <no-reply@groq.com>", "Action required: your API key will expire", mt.INFRA),
+    (MAIN, "GitHub <noreply@github.com>", "Your personal access token has expired", mt.INFRA),
+    # Потрібні обидві умови: реклама від того ж відправника не інфра
+    (MAIN, "Groq <news@groq.com>", "Meet our new models", mt.AUTO),
+    (MAIN, "Shop <deals@shop.example>", "Offer will expire tonight", mt.AUTO),
+    # Реклама банку не гроші: Revolut шле вісім рекламних листів на два справжніх
+    (MAIN, "Revolut <no-reply@revolut.com>", "Earn €50 for each friend you invite", mt.NOISE),
+    (MAIN, "Revolut <no-reply@revolut.com>", "Payment received", mt.MONEY),
+    # Литовський код підтвердження
+    (MAIN, "Swedbank <info@swedbank.lt>", "Jūsų patvirtinimo kodas", mt.SECURITY),
+    # Батько пише з wp.pl, і ці листи падали в «авто»
+    (MAIN, "Tata <tata@wp.pl>", "Cześć", mt.HUMAN),
 ]
 
 
