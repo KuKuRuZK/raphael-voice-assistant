@@ -1,5 +1,5 @@
 """
-Рафаель: точка входу. Запуск: pythonw lin.py (або start_hidden.vbs).
+Лін: точка входу. Запуск: pythonw lin.py (або start_hidden.vbs).
 
 Тут лише те, що має статися раніше за все інше (журнал падінь, вікна дочірніх
 процесів, логи), і main(): вікно, трей, фонові потоки. Уся логіка живе в
@@ -17,7 +17,7 @@ from datetime import datetime
 # ── Падіння мають лишати слід ─────────────────────────────────────────────────
 # Під pythonw немає консолі (sys.stderr = None). Помилка до налаштування логів,
 # наприклад не встановлена бібліотека, зникала безслідно, а start.bat тихо
-# перезапускав Рафаеля кожні 5 секунд. Тепер traceback іде в crash.log.
+# перезапускав Лін кожні 5 секунд. Тепер traceback іде в crash.log.
 _PYTHONW = sys.stderr is None or os.path.basename(sys.executable).lower() == "pythonw.exe"
 if _PYTHONW:
     try:
@@ -106,7 +106,7 @@ for _noisy in ("PIL", "httpcore", "httpx", "urllib3", "spotipy"):
 
 import pystray  # noqa: E402
 
-from raphael import (agenda, assistant, briefing, hotkeys, monitor,  # noqa: E402
+from raphael import (agenda, assistant, avatar, briefing, hotkeys, monitor,  # noqa: E402
                      notes, runtime, stt, sysmon, tts, ui, vibes)
 
 log = logging.getLogger("Лін")
@@ -154,7 +154,7 @@ def main():
         import tkinter as _tk
         import tkinter.messagebox as _tkmsg
         root = _tk.Tk(); root.withdraw()
-        _tkmsg.showwarning("Рафаель", "Рафаель вже запущений!\nЗакрий попередню копію через трей.")
+        _tkmsg.showwarning("Лін", "Лін вже запущена!\nЗакрий попередню копію через трей.")
         root.destroy()
         sys.exit(0)
 
@@ -167,7 +167,9 @@ def main():
 
     # ── Створюємо GUI ПЕРШИМ, щоб вітання показало анімацію ──
     runtime.LIN_UI = ui.LinUI()
-    log.info("GUI створено")
+    if not cfg.UI_WINDOW:
+        runtime.LIN_UI.hide()                # стан показує тіло; вікно лише з трею
+    log.info("GUI створено" + ("" if cfg.UI_WINDOW else " (сховане, UI_WINDOW false)"))
 
     # ── Гарячі клавіші (push-to-talk) ─────────────────────────
     hotkeys._setup_hotkeys()
@@ -190,11 +192,14 @@ def main():
     threading.Thread(target=sysmon.sys_monitor_loop, daemon=True).start()
     threading.Thread(target=agenda.calendar_reminder_loop, daemon=True).start()
     threading.Thread(target=vibes.vibe_loop,       daemon=True).start()
+    threading.Thread(target=avatar.avatar_loop,    daemon=True).start()
+    threading.Thread(target=tts.start_http_server, daemon=True).start()   # свій голос (TTS_HTTP_SERVER)
 
     # ── Системний трей у фоновому потоці ─────────────────────
     def _run_tray():
         def on_quit(icon, item):
             log.info("Вимкнено з треї")
+            avatar.quit_body()                   # Лін вимикається цілком: і мозок, і тіло
             notes.update_memory_after_session(assistant.history)
             icon.stop()
             try:
@@ -235,15 +240,45 @@ def main():
         def toggle_mail_tray(icon, item):
             monitor._monitor_toggle("gmail", not monitor._MONITOR["gmail"])
 
+        # ── Тіло: тумблери оверлея через міст (раніше в нього був свій значок) ──
+        def body_toggle(key):
+            return lambda icon, item: avatar.set_body(**{key: not avatar.body_state(key)})
+
+        def body_set(**kw):
+            return lambda icon, item: avatar.set_body(**kw)
+
+        def body_do(action):
+            return lambda icon, item: avatar.body(action)
+
+        live = lambda i: avatar.online()
+        BODY_ACTIONS = [("Танець", "dance"), ("Сісти на вікно", "sitA"), ("Визирнути", "peekB"), ("Музика", "music"),
+                        ("Гітара", "guitar"), ("Перейти на інший монітор", "travel"), ("Телепорт", "tp"),
+                        ("Стукіт", "knock"), ("Регіт", "laugh"), ("Спить", "sleep"), ("Потягується", "stretch"),
+                        ("Жуйка", "bubble"), ("Істерика", "tantrum"), ("Висить", "hang"), ("Фотобомба", "photo"),
+                        ("Вилазить", "climb"), ("Тицьнути", "point"), ("Голограма", "holo"), ("Краде курсор", "cursor")]
+        body_menu = pystray.Menu(
+            pystray.MenuItem("Автопілот", body_toggle("autopilot"), checked=lambda i: bool(avatar.body_state("autopilot")), enabled=live),
+            pystray.MenuItem("Режим гри вручну", body_toggle("manual"), checked=lambda i: bool(avatar.body_state("manual")), enabled=live),
+            pystray.MenuItem("Вікно мови", pystray.Menu(*[
+                pystray.MenuItem(label, body_set(skin=v), checked=(lambda v: lambda i: avatar.body_state("skin") == v)(v), radio=True)
+                for label, v in (("Комікс", "comic"), ("Термінал", "terminal"), ("HUD", "hud"))]), enabled=live),
+            pystray.MenuItem("Аура", pystray.Menu(*[
+                pystray.MenuItem(label, body_set(aura=v), checked=(lambda v: lambda i: avatar.body_state("aura") == v)(v), radio=True)
+                for label, v in (("Нема", 0), ("Тихо", 1), ("Густо", 2))]), enabled=live),
+            pystray.MenuItem("Дії", pystray.Menu(*[pystray.MenuItem(label, body_do(a)) for label, a in BODY_ACTIONS]), enabled=live),
+            pystray.MenuItem("Повернути курсор", body_set(cursor="restore"), enabled=live),
+        )
+
         icon = pystray.Icon(
-            "Рафаель",
+            "Лін",
             ui.create_tray_icon(),
-            "Рафаель — Голосовий Асистент",
+            "Лін: голосова помічниця",
             menu=pystray.Menu(
-                pystray.MenuItem("✦ Рафаель активний", None, enabled=False),
+                pystray.MenuItem("✦ Лін активна", None, enabled=False),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("📋 Дайджест зараз", do_digest),
                 pystray.MenuItem("🔇 Замовкни (стоп)", stop_speaking),
+                pystray.MenuItem("🖤 Тіло", body_menu),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("🎤 Режим кнопки", toggle_ptt_tray,
                                  checked=lambda i: cfg.PUSH_TO_TALK),

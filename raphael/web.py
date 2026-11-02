@@ -41,7 +41,7 @@ def _silent_web_search(query: str):
 
             # Модель підсумовує коротко, озвучка йде потоком
             answer = tts.speak_stream(llm.llm_stream(
-                cfg.GROQ_PRIMARY_MODEL,
+                llm.main_model(),
                 messages=[{
                     "role": "user",
                     "content": (

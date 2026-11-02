@@ -38,5 +38,11 @@
   "FAST_MODEL": "",
   "VISION_MODEL": "gemini:gemini-3.1-flash-lite",
 
-  "WAKE_ENGINE": "whisper"
+  "WAKE_ENGINE": "whisper",
+  "BRAIN_LOCAL_MODEL": "lmstudio:openai/gpt-oss-20b",
+  "AVATAR_DIR": "C:\\AI\\projects\\lin_avatar",
+  "UI_WINDOW": false,
+  "TTS_ENGINE": "http",
+  "TTS_HTTP_VOICE": "Анастасія Павленко",
+  "TTS_HTTP_SERVER": ["C:\\AI\\tts\\holos\\Scripts\\pythonw.exe", "C:\\AI\\tts\\lin_voice_server.py"]
 }

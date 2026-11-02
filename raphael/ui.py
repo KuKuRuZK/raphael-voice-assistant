@@ -3,6 +3,7 @@
 """
 import logging
 import math
+import os
 import tkinter as tk
 
 from PIL import Image, ImageDraw
@@ -26,7 +27,7 @@ except Exception:
 # ============================================================
 
 def _star_points(cx, cy, R, r):
-    """Точки 4-кутної зірки — божественна іскра в емблемі Рафаеля."""
+    """Точки 4-кутної зірки — божественна іскра в емблемі Лін."""
     pts = []
     for k in range(8):
         rad = R if k % 2 == 0 else r
@@ -36,7 +37,7 @@ def _star_points(cx, cy, R, r):
 
 
 def _draw_emblem(draw, S):
-    """Малює емблему-німб Рафаеля на полотні ImageDraw розміром S×S (для трею/іконки)."""
+    """Малює емблему-німб Лін на полотні ImageDraw розміром S×S (для трею/іконки)."""
     c = S / 2.0
     u = S / 64.0   # масштаб відносно базових 64px
     draw.ellipse([3*u, 3*u, S-3*u, S-3*u], fill=(18, 16, 38, 255))       # небесний диск
@@ -53,9 +54,14 @@ def _draw_emblem(draw, S):
 
 
 def create_tray_icon() -> Image.Image:
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    _draw_emblem(ImageDraw.Draw(img), 64)
-    return img
+    """Значок трею: маска Лін (mask.ico у корені проєкту), без неї старий німб."""
+    from raphael import settings as cfg
+    try:
+        return Image.open(os.path.join(cfg.SCRIPT_DIR, "mask.ico")).convert("RGBA").resize((64, 64), Image.LANCZOS)
+    except Exception:
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        _draw_emblem(ImageDraw.Draw(img), 64)
+        return img
 
 
 # ============================================================
@@ -65,7 +71,7 @@ def create_tray_icon() -> Image.Image:
 class LinUI:
     """Маленьке плаваюче вікно з анімацією стану."""
 
-    # Палітра «Рафаель» — небесний мудрець: золото, тепле біле, блакить
+    # Палітра орба: золото, тепле біле, блакить
     STATE_COLORS = {
         "idle":      ("#141228", "#caa84e", "✦",   "#e9cf86"),
         "listening": ("#10204a", "#7fb0ff", "🎤",  "#dcebff"),
@@ -75,7 +81,7 @@ class LinUI:
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("Рафаель")
+        self.root.title("Лін")
         self.root.geometry("310x218+40+40")
         self.root.configure(bg="#0a0913")
         self.root.resizable(False, False)
@@ -105,7 +111,7 @@ class LinUI:
         hdr.bind("<Button-1>",  self._drag_start)
         hdr.bind("<B1-Motion>", self._drag_move)
 
-        tk.Label(hdr, text="✦  Р А Ф А Е Л Ь", fg="#e9cf86", bg="#14111f",
+        tk.Label(hdr, text="✦  Л І Н", fg="#e9cf86", bg="#14111f",
                  font=("Segoe UI", 10, "bold")).pack(side="left", padx=12)
 
         # Кнопка закрити (тільки ховає — повний вихід лише через трей)
@@ -293,11 +299,15 @@ class LinUI:
             self._subtext.set("")
 
     def safe_set_state(self, state: str, text: str = ""):
-        """Thread-safe оновлення стану (з будь-якого потоку)."""
+        """Thread-safe оновлення стану (з будь-якого потоку). Тіло (аватар) дізнається
+        про той самий стан; «говорю» йому шле озвучка, з текстом речення і гучністю."""
         try:
             self.root.after(0, lambda: self.set_state(state, text))
         except Exception:
             pass
+        if state != "speaking":
+            from raphael import avatar          # avatar тягне llm і vibes: тут не на верху файлу
+            avatar.mind(state, text)
 
     def set_mode(self, mode: str):
         labels = {"chat": "💬 chat", "dictation": "🎤 dictation", "normal": "● normal"}
@@ -365,7 +375,7 @@ class LinUI:
 
         self.root.after(90 if (self._compact and self.state == "idle") else 50, self._animate)
 
-    # ── Геометричні примітиви німба «Рафаеля» ────────────────
+    # ── Геометричні примітиви німба ────────────────
     def _star(self, cx, cy, R, r, fill, outline=""):
         """Чотирикутна зірка — божественна іскра в ядрі."""
         pts = []

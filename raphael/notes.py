@@ -63,7 +63,7 @@ def note_add(text: str, remind_minutes: int = 0, remind_at_str: str = "") -> str
     if remind_at_str:
         remind_at = parse_remind_time(remind_at_str)
         if remind_at is None:
-            # Раніше тут мовчки записувалась звичайна нотатка, а Рафаель казав
+            # Раніше тут мовчки записувалась звичайна нотатка, а Лін казала
             # «Записала», і ти думав, що нагадування буде. Тепер чесно.
             log.warning(f"Нагадування: не зрозуміла час '{remind_at_str}' для «{text}»")
             return (f"Не зрозуміла, коли нагадати про «{text}». Скажи, наприклад, "
@@ -195,7 +195,7 @@ def update_memory_after_session(exchanges: list):
             + "\n".join([f"{m['role']}: {m['content']}" for m in exchanges[-10:]])
         )
         resp = llm.llm_chat(
-            cfg.GROQ_PRIMARY_MODEL,
+            llm.main_model(),
             messages=[{"role": "user", "content": summary_prompt}],
             max_tokens=300,          # міркувальні моделі з'їдають частину ліміту
         )

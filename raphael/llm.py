@@ -4,8 +4,11 @@
 """
 import json
 import logging
+import os
 import re
 
+from raphael import emotion
+from raphael import runtime
 from raphael import settings as cfg
 from raphael import usage
 
@@ -34,6 +37,20 @@ _FORCE_PRIMARY = (
     "видали", "видалит", "очисти", "прибери",  # незворотне
     "виконан", "зроблен", "готово",
 )
+
+# Прохання до тіла на екрані (тег avatar:дія)
+_BODY_HINTS = (
+    "потанц", "танцю", "сядь", "визирни", "поспи", "постукай", "стукни", "перейди", "телепорт",
+    "посмійся", "потягнись", "жуйк", "істерик", "повис", "фотобомб", "вилізь", "тицьни",
+    "голограм", "курсор", "сховайся",
+)
+
+
+def _is_command(text: str) -> bool:
+    """Команда, дорога тема чи прохання до тіла: тут потрібна дія з точним тегом."""
+    t = text.lower()
+    return any(h in t for h in _COMMAND_HINTS + _FORCE_PRIMARY + _BODY_HINTS)
+
 
 # ── Провайдери LLM ───────────────────────────────────────────────────────────
 # Groq, Gemini і локальні сервери (Ollama, LM Studio, llama.cpp) говорять ОДНИМ
@@ -67,7 +84,7 @@ def _is_local(model: str) -> bool:
 # ── Роздуми вголос ────────────────────────────────────────────────────────────
 # Gemma 4 через Gemini API і частина локальних моделей пишуть міркування прямо
 # у відповідь: <thought>...</thought> або <think>...</think>, англійською і на
-# тисячі символів. Рафаель зачитав би їх уголос (знайдено на тесті 2026-10-12).
+# тисячі символів. Лін зачитала б їх уголос (знайдено на тесті 2026-10-12).
 _THINK_OPEN = re.compile(r"<(think|thought|thinking|reasoning)>", re.I)
 _THINK_BLOCK = re.compile(r"<(think|thought|thinking|reasoning)>.*?(</\1>|\Z)", re.I | re.S)
 _THINK_TAGS = ("<think>", "<thought>", "<thinking>", "<reasoning>")
@@ -171,7 +188,12 @@ def _candidates(model: str, fallback) -> list:
     if fallback is not None and not fallback:
         return [model]
     out = [model]
-    for m in (_fallback_for(model) if fallback is None else fallback, cfg.OFFLINE_MODEL):
+    extra = (_fallback_for(model) if fallback is None else fallback, cfg.OFFLINE_MODEL)
+    if _is_local(model) and model == cfg.BRAIN_LOCAL_MODEL:
+        extra = (cfg.GROQ_PRIMARY_MODEL, cfg.GROQ_FALLBACK_MODEL)   # локальна не впоралась: обидві хмарні
+    elif cfg.BRAIN_LOCAL_MODEL and not runtime.GAME:
+        extra = (*extra, cfg.BRAIN_LOCAL_MODEL)                     # хмара мовчить (ліміт, 503): остання надія
+    for m in extra:
         if m and m not in out:
             out.append(m)
     return out
@@ -228,11 +250,55 @@ def llm_chat(model: str, messages, fallback=None, **kw):
     candidates, errors = _candidates(model, fallback), []
     for m in candidates:
         try:
-            return _llm_call(m, messages, **kw)
+            resp = _llm_call(m, messages, **kw)
+            if _is_local(m) and m is not candidates[-1]:
+                _check_local_reply(resp)
+            return resp
         except Exception as e:
             errors.append((m, e))
             _next_model(errors, candidates)
     raise LLMUnavailable(errors) from errors[-1][1]
+
+
+# Літери, яких нема в українській: локальна модель зіслизнула на російську
+_RUSSIAN = re.compile(r"[ыэъёЫЭЪЁ]")
+
+
+class BadLocalReply(Exception):
+    """Локальна модель відповіла, але так, що краще спитати хмару."""
+
+
+def _check_local_reply(resp) -> None:
+    """Невелика локальна модель (gpt-oss-20b) інколи: віддає порожньо (роздуми
+    з'їли ліміт) або переходить на російську. Тоді відповідає наступна (хмара)."""
+    choice = (getattr(resp, "choices", None) or [None])[0]
+    msg = getattr(choice, "message", None)
+    if getattr(msg, "tool_calls", None):
+        return
+    text = emotion.EMO_RE.sub("", getattr(msg, "content", None) or "").strip()   # тег настрою це не текст і не дія
+    if not text:
+        raise BadLocalReply("порожня відповідь")
+    if _RUSSIAN.search(text):
+        raise BadLocalReply(f"російська: {text[:60]!r}")
+    # Теги дій: невідомий тип ([ACTION:app:open]), голий тег посеред тексту чи поруч
+    # із тегом у дужках (його зачитали б уголос), або дужки без дії («[dance]»)
+    tags = _ACTION_RE.findall(text)
+    if any(not _plausible_action(t.lower()) for t, _ in tags):
+        raise BadLocalReply(f"невідома дія: {text[:60]!r}")
+    rest = _ACTION_RE.sub("", text)
+    bare = _BARE_ANYWHERE.search(rest)
+    if bare and (tags or bare.start() > 0 or not _plausible_action(bare.group(1).lower())):
+        raise BadLocalReply(f"голий тег у тексті: {text[:60]!r}")
+    if re.search(r"\[[^\]]*\]", rest):
+        raise BadLocalReply(f"дужки без дії: {text[:60]!r}")
+
+
+def _plausible_action(name: str) -> bool:
+    return name.startswith(_ACTION_PREFIXES) or name in ("weather", "timer", "hotkey", "screenshot")
+
+
+# Голий тег будь-де в тексті (для перевірки локальної відповіді)
+_BARE_ANYWHERE = re.compile(r"(?<![\w\[])([a-z][a-z_]{2,24})\s*:\s*\S", re.I)
 
 
 def _stream_text(stream, model: str = ""):
@@ -322,7 +388,8 @@ def _tool_action(message) -> str:
 
 # Розбір тега дії. Терпимий до пробілів і регістру: gpt-oss інколи пише
 # "[ ACTION:spotify_pause: ]", і сувора версія такий тег просто не бачила.
-_ACTION_RE = re.compile(r"\[\s*(?:ACTION\s*:\s*)?([A-Za-z_]+)\s*:\s*([^\]]*?)\s*\]", re.IGNORECASE)
+# Тег настрою [EMO:happy] під цей вигляд теж підпадав би, але це не дія (raphael.emotion)
+_ACTION_RE = re.compile(r"\[\s*(?:ACTION\s*:\s*)?(?!EMO(?:TION)?\s*:)([A-Za-z_]+)\s*:\s*([^\]]*?)\s*\]", re.IGNORECASE)
 
 # Модель регулярно пише дію БЕЗ дужок: «brain_plan:купити молоко».
 # Рішення при цьому правильне — гине лише формат. Тому ловимо й такий вигляд,
@@ -335,12 +402,13 @@ _ACTION_PREFIXES = (
     "screen_", "focus_", "memory_", "volume_", "window_", "notepad_",
     "claude_", "ask_", "kill_", "type_", "voice_", "timer", "weather",
     "currency", "hotkey", "shutdown", "get_time", "minimize_", "close_",
-    "vibe_",
+    "vibe_", "avatar",
 )
 
 
 def _find_action(reply: str):
     """Шукає дію спершу в дужках, потім у голому вигляді. → (тип, параметр, чи_в_дужках)."""
+    reply = emotion.EMO_RE.sub("", reply or "").strip()    # «[EMO:happy] note_remind:…»: голий тег після настрою
     m = _ACTION_RE.search(reply)
     if m:
         return m.group(1).lower(), m.group(2).strip(), True
@@ -370,6 +438,11 @@ def _model_kwargs(model: str) -> dict:
         return {"reasoning_effort": "low"}
     if m.startswith("qwen/"):
         return {"reasoning_effort": "none"}
+    if m.startswith("google/gemma-4"):
+        # Gemma 4 в LM Studio: без цього думає 20-90 с і вичерпує ліміт токенів
+        # з порожньою відповіддю; з "none" відповідь за ≈1 с. enable_thinking
+        # і "low" вона ігнорує (перевірено 2026-11-02, LM Studio 0.4).
+        return {"reasoning_effort": "none"}
     if "gemini-3.7" in m or "-pro" in m:
         # Ці беремо САМЕ заради міркувань — не глушимо їх.
         return {"reasoning_effort": "low"}
@@ -395,4 +468,90 @@ def _choose_model(text: str) -> str:
     if (cfg.FAST_MODEL and not any(h in t for h in _FORCE_PRIMARY)
             and len(t.split()) <= 6 and any(h in t for h in _COMMAND_HINTS)):
         return cfg.FAST_MODEL
+    model = main_model()
+    # Локальна (gpt-oss-20b) теги дій часто ламає: «[ACTION:app:open]», голий тег
+    # поряд із тегом у дужках, не та дія. Команди одразу в хмару, розмова локально.
+    if _is_local(model) and _is_command(t):
+        return cfg.GROQ_PRIMARY_MODEL
+    return model
+
+
+def main_model() -> str:
+    """Основна модель зараз: локальна (BRAIN_LOCAL_MODEL), поки не граєш; у грі хмарна."""
+    if cfg.BRAIN_LOCAL_MODEL and not runtime.GAME:
+        return cfg.BRAIN_LOCAL_MODEL
     return cfg.GROQ_PRIMARY_MODEL
+
+
+# ── Локальна модель: вивантажити на гру, завантажити після ──────────────────
+def _lms(*args, timeout=180) -> bool:
+    import subprocess
+    if not os.path.exists(cfg.LMS_EXE):
+        log.warning(f"Мозок: нема {cfg.LMS_EXE}, LM Studio не керую")
+        return False
+    r = subprocess.run([cfg.LMS_EXE, *args], capture_output=True, text=True, encoding="utf-8",
+                       errors="replace", timeout=timeout,
+                       creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if r.returncode != 0:
+        log.warning(f"Мозок: lms {' '.join(args)}: {(r.stderr or r.stdout).strip()[:200]}")
+    return r.returncode == 0
+
+
+def _ollama(payload: dict) -> bool:
+    import urllib.request
+    base = LLM_PROVIDERS["local"]["base_url"].rsplit("/v1", 1)[0]
+    req = urllib.request.Request(base + "/api/generate", data=json.dumps(payload).encode(),
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=180) as r:
+        return r.status == 200
+
+
+def local_unload() -> bool:
+    """Звільнити відеопамʼять під гру: вивантажити локальну модель."""
+    m = cfg.BRAIN_LOCAL_MODEL
+    if m.startswith("lmstudio:"):
+        ok = _lms("unload", "--all")
+    elif m.startswith("local:"):
+        ok = _ollama({"model": m.split(":", 1)[1], "keep_alive": 0})
+    else:
+        return False
+    log.info(f"Мозок: {m} {'вивантажено' if ok else 'не вивантажено'} на час гри")
+    return ok
+
+
+def local_preload() -> bool:
+    """Завантажити локальну модель заздалегідь, щоб перша відповідь не чекала."""
+    m = cfg.BRAIN_LOCAL_MODEL
+    if m.startswith("lmstudio:"):
+        name = m.split(":", 1)[1]
+        import subprocess
+        try:
+            ps = subprocess.run([cfg.LMS_EXE, "ps"], capture_output=True, text=True, encoding="utf-8",
+                                errors="replace", timeout=30,
+                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        except Exception:
+            ps = ""
+        if name in ps:
+            return True                              # уже в памʼяті: друга копія не потрібна
+        # Один слот: Лін питає по одному, а кожен зайвий слот тримає свій кеш контексту (≈0,3 ГБ)
+        ok = _lms("server", "start", timeout=60) and _lms(
+            "load", name, "-c", str(cfg.BRAIN_LOCAL_CONTEXT), "--gpu", "max", "--parallel", "1", "-y", timeout=300)
+    elif m.startswith("local:"):
+        ok = _ollama({"model": m.split(":", 1)[1], "keep_alive": "30m"})
+    else:
+        return False
+    log.info(f"Мозок: {m} {'завантажено' if ok else 'не завантажилась'}")
+    if ok:
+        _warm_up(m)
+    return ok
+
+
+def _warm_up(model: str) -> None:
+    """Прогнати системний промт: перше читання 11 тис. символів займає ≈8 с, далі
+    він у кеші моделі, і перша справжня відповідь приходить за ≈1,5 с."""
+    from raphael import prompt                       # prompt сам тягне llm через vibes
+    try:
+        _llm_call(model, prompt.inject_time([{"role": "system", "content": prompt.build_system_prompt()},
+                                             {"role": "user", "content": "привіт"}]), max_tokens=1)
+    except Exception as e:
+        log.debug(f"Мозок: розігрів не вдався: {e}")

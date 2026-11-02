@@ -22,7 +22,7 @@ from raphael import voice_rules as vr
 
 log = logging.getLogger("Лін")
 
-# Рафаель сам натискає клавіші; кут екрана не має зупиняти pyautogui
+# Лін сама натискає клавіші; кут екрана не має зупиняти pyautogui
 pyautogui.FAILSAFE = False
 
 

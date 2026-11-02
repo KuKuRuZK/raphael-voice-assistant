@@ -24,7 +24,7 @@ goto loop
 
 :giveup
 echo [%date% %time%] Lin keeps crashing on start - watchdog stopped, see crash.log >> watchdog.log
-powershell -NoProfile -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Raphael crashes on start 5 times in a row. Details: crash.log', 'Raphael') | Out-Null"
+powershell -NoProfile -WindowStyle Hidden -Command "Add-Type -AssemblyName PresentationFramework; [System.Windows.MessageBox]::Show('Lin crashes on start 5 times in a row. Details: crash.log', 'Lin') | Out-Null"
 goto end
 
 :cleanstop

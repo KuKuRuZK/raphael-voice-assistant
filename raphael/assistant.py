@@ -235,6 +235,10 @@ def ask_lin(user_input: str) -> str:
         if runtime._action_failed.is_set():
             return ""          # дія вже сама чесно сказала, що не вийшло
         reply = llm._ACTION_RE.sub("", reply).strip()
+        # gpt-oss пише той самий тег ще й голим текстом перед дужками
+        # («note_remind:мама|16:19 [ACTION:note_remind:…]»): його не зачитуємо
+        if llm._find_action(reply)[0]:
+            reply = ""
         if rerouted_to_voice:
             return ""   # відповідь озвучить сам пошук — не дублюємо ack моделі
 
@@ -416,7 +420,7 @@ def process_command(command: str):
 
     try:
         reply = ask_lin(command)
-        print(f"  Рафаель: {reply}\n")
+        print(f"  Лін: {reply}\n")
         tts.speak(reply)
     except Exception as e:
         log.error(f"Помилка відповіді: {e}", exc_info=True)
@@ -539,7 +543,7 @@ def assistant_loop():
 
                 # ── NORMAL MODE: чекаємо wake word ──
                 # Імʼя цілим словом на початку фрази чи в кінці. Раніше шукалось
-                # підрядком будь-де, і «хвилин», «лінія», «Берлін» будили Рафаеля.
+                # підрядком будь-де, і «хвилин», «лінія», «Берлін» будили Лін.
                 wake = vr.find_wake(text, cfg.WAKE_WORDS)
                 if not wake:
                     continue

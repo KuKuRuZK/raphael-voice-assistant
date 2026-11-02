@@ -1,5 +1,5 @@
 """
-Вайби: Рафаель сама помічає гру й музику і інколи вставляє своє.
+Вайби: Лін сама помічає гру й музику і інколи вставляє своє.
 
 Гра = процес з теки Steam/Epic/GOG або exe зі списку VIBE_GAME_EXES.
 Музика = зміна треку в Spotify. Що зараз грає, дописується в системний
@@ -91,7 +91,7 @@ def _line(situation: str) -> str:
     """Коротка репліка від себе під ситуацію (без озвучки)."""
     from raphael import prompt          # prompt сам імпортує vibes
     resp = llm.llm_chat(
-        cfg.GROQ_PRIMARY_MODEL,
+        llm.main_model(),
         messages=prompt.inject_time([
             {"role": "system", "content": prompt.persona_block() + " "
              "Зараз ти сама, без запиту, вставляєш одну коротку репліку вголос: до 15 слів, "
@@ -125,6 +125,7 @@ def _say(situation: str) -> bool:
 
 
 def music_tick():
+    from raphael import avatar                    # avatar сам імпортує vibes
     sp = music._get_spotipy()
     if not sp:
         return
@@ -134,6 +135,8 @@ def music_tick():
         log.debug(f"Вайби: Spotify: {e}")
         return
     if not st or not st.get("item") or not st.get("is_playing"):
+        if _vibe["track"] is not None:
+            avatar.vibe(False)                    # тіло: музика стихла
         _vibe["track"] = None
         return
     track = st["item"]["name"]
@@ -142,6 +145,7 @@ def music_tick():
         return
     first = _vibe["track"] is None
     _vibe["track"], _vibe["artist"] = track, artist
+    avatar.vibe(True, track, artist)              # тіло: грає музика, частіше слухає й танцює
     gap = time.time() - _vibe["music_last_quip"]
     if first or gap < cfg.VIBE_MUSIC_MIN_GAP_MIN * 60 or random.random() > cfg.VIBE_MUSIC_CHANCE:
         return

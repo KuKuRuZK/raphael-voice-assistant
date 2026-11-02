@@ -37,8 +37,8 @@ def test_example_persona_is_valid():
     path = os.path.join(settings._ROOT, "persona.example.txt")
     with open(path, encoding="utf-8") as f:
         lines = [x for x in f if x.strip() and not x.startswith("#")]
-    assert lines and "Рафаель" in lines[0]
-    assert prompt.DEFAULT_PERSONA.startswith("Ти Рафаель")
+    assert lines and "Лін" in lines[0]
+    assert prompt.DEFAULT_PERSONA.startswith("Ти Лін")
 
 
 # ── Детект гри ────────────────────────────────────────────────────────────────

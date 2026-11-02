@@ -1,5 +1,5 @@
 """
-Налаштування Рафаеля: значення за замовчуванням, секрети і config.json.
+Налаштування Лін: значення за замовчуванням, секрети і config.json.
 
 Інші модулі читають їх як cfg.X у момент використання, а не копіюють при
 імпорті. Тому і config.json, і зміни голосом (швидкість мови, режим кнопки,
@@ -54,12 +54,11 @@ GROQ_API_KEY = _secret("GROQ_API_KEY")
 GROQ_PRIMARY_MODEL  = "openai/gpt-oss-120b"        # Groq, 1000/добу, reasoning medium
 GROQ_FALLBACK_MODEL = "gemini:gemini-3.1-flash-lite"  # інший провайдер, 500/добу
 # qwen/qwen3.6-27b у резерв НЕ беремо: вигадує власні теги —
-# [Action:...], [DODATOK:...], [Pause Spotify] — Рафаель їх не розпізнає.
+# [Action:...], [DODATOK:...], [Pause Spotify] — Лін їх не розпізнає.
+# Імʼя Лін і те, на що його перекручує розпізнавання (Vosk знає «лин», «ліна», «лінь»;
+# «лін» у його словнику нема). Колишнє імʼя (Рафаель) прибрано 2026-11-02.
 WAKE_WORDS = {"лін", "лин", "lin", "linz", "lynn", "ліна", "лінь",
-              "lean", "lien", "lane", "line", "лінc", "lens",
-              # Рафаель — нове ім'я (лишаємо «лін» як псевдонім для надійного STT)
-              "рафаель", "рафаэль", "рафаїл", "рафаел", "рафа", "рафік",
-              "рафаелю", "рафаеля", "raphael", "rafael", "рафаелька"}
+              "lean", "lien", "lane", "line", "лінc", "lens"}
 VOICE       = "uk-UA-PolinaNeural"
 VOICE_RATE  = "+25%"   # динамічно оновлюється через _adjust_voice_rate()
 VOICE_PITCH = "+3Hz"   # трохи вищий тон — менш роботоподібний
@@ -77,7 +76,7 @@ PAUSE_THRESHOLD = 0.9
 #   "whisper"  кожна почута фраза йде в Groq Whisper, а імʼя шукається в тексті
 #   "vosk"     імʼя шукає Vosk локально, у Whisper іде лише фраза з імʼям
 #              (потрібна модель vosk-model-uk і імʼя в її словнику, інакше
-#              Рафаель сам повернеться до "whisper" і напише про це в лог)
+#              Лін сама повернеться до "whisper" і напише про це в лог)
 WAKE_ENGINE = "whisper"
 
 # Якщо True — Лін запитає підтвердження перед відкриттям програм/браузера
@@ -168,7 +167,7 @@ BRAIN_PAUSE_THRESHOLD = 2.5        # пауза (сек), після якої ф
 
 # ── Watchdog (авто-перезапуск) ────────────────────────────────────────────────
 STOP_MARKER = os.path.join(SCRIPT_DIR, ".lin_stop")   # створюється при свідомому виході
-# Рафаель пропрацював ALIVE_AFTER секунд → старт вдався. start.bat за цим файлом
+# Лін пропрацювала ALIVE_AFTER секунд → старт вдався. start.bat за цим файлом
 # відрізняє падіння на старті (зламана установка) від випадкового збою.
 ALIVE_MARKER = os.path.join(SCRIPT_DIR, ".lin_alive")
 ALIVE_AFTER  = 120
@@ -179,7 +178,7 @@ MEMORY_PATH = os.path.join(SCRIPT_DIR, "memory.json")   # памʼять між 
 USAGE_PATH  = os.path.join(SCRIPT_DIR, "usage.json")    # лічильник денних лімітів
 
 # ── Офлайн ────────────────────────────────────────────────────────────────────
-# Без інтернету Рафаель може й далі відповідати голосом, якщо є локальні
+# Без інтернету Лін може й далі відповідати голосом, якщо є локальні
 # модель і голос. Обидва необовʼязкові: чого немає, того просто не пробуємо.
 # OFFLINE_MODEL: модель Ollama, яку питати, коли не відповіли ні основна, ні
 #   резервна. Напр. "local:gemma3:4b" (спершу ollama pull gemma3:4b). "" = ні.
@@ -209,6 +208,9 @@ TTS_ENGINE     = "edge"
 TTS_HTTP_URL   = "http://127.0.0.1:8880/v1/audio/speech"
 TTS_HTTP_MODEL = ""     # що сервер чекає в полі model ("" = не передавати)
 TTS_HTTP_VOICE = ""     # голос на сервері ("" = його типовий)
+# Як запустити той сервер, якщо він не відповідає на старті: список [програма, аргументи...].
+# Напр. голос Лін (StyleTTS2, C:\AI\tts\lin_voice_server.py). Порожньо = запускаєш сам.
+TTS_HTTP_SERVER = []
 
 # ── Денні ліміти безкоштовного рівня (для попереджень і «скільки лімітів») ──
 # Ключ «провайдер:модель». Значення з таблиць Groq і Gemini на момент запису;
@@ -243,14 +245,14 @@ TAP_TOGGLE_KEY = "right ctrl"          # "" — вимкнути тап
 TAP_MAX_HOLD   = 0.4                   # довше утримання = звичайний модифікатор
 # Що робить тап: "ptt" — активація (надиктувати команду), "dictate" — диктовка
 # у другий мозок, "toggle" — перемкнути режим кнопки. Тап посеред мови
-# Рафаеля завжди просто зупиняє озвучку.
+# Лін завжди просто зупиняє озвучку.
 TAP_ACTION     = "ptt"
 
 # ── Характер ──────────────────────────────────────────────────────────────────
 # Початок системного промта береться з цього файлу (відносний шлях = від теки
 # проєкту), правила чесності й дій лишаються в коді. Файл читається на кожен
 # запит, тож правку видно з наступної ж фрази, без перезапуску. Нема файлу =
-# стриманий Рафаель з prompt.DEFAULT_PERSONA. Свої персонажі в git не йдуть
+# стримана Лін з prompt.DEFAULT_PERSONA. Свої персонажі в git не йдуть
 # (.gitignore: persona*.txt), приклад формату: persona.example.txt.
 PERSONA_FILE = "persona.txt"
 
@@ -275,6 +277,32 @@ VIBE_GAME_EXES = {
 # Теки в steamapps\common, які не ігри: Wallpaper Engine працює завжди
 VIBE_GAME_IGNORE = ["wallpaper_engine", "obs studio", "steamworks shared", "steam controller configs",
                     "steamvr", "lossless scaling"]
+
+# Плаваюче вікно-орб зі станом. False: його не видно (стан показує тіло на екрані),
+# лишається трей, а в ньому «Показати вікно» для налагодження.
+UI_WINDOW = True
+
+# ── Аватар: тіло Лін поверх робочого столу (Electron, тека lin_avatar) ──────
+# Мозок шле тілу режим: у грі монітор з вікном гри для неї закритий.
+# AVATAR_DIR: тека аватара, тоді тіло запускається разом з мозком;
+# порожньо = запускати окремо (npm start у теці).
+AVATAR_ENABLED  = True
+AVATAR_URL      = "http://127.0.0.1:8766"
+AVATAR_INTERVAL = 5        # с між перевірками гри
+AVATAR_DIR      = ""
+
+# ── Мозок за режимом: локальна модель, поки не граєш ───────────────────────
+# BRAIN_LOCAL_MODEL: основна модель поза грою, напр. "lmstudio:google/gemma-4-26b-a4b-qat".
+# Йде гра (raphael.avatar бачить її так само, як вайби), і питаємо GROQ_PRIMARY_MODEL,
+# а локальну вивантажуємо (BRAIN_FREE_IN_GAME), щоб гра мала всю відеопамʼять.
+# Гра скінчилась, і локальна вантажиться заздалегідь (BRAIN_PRELOAD): інакше перша
+# відповідь чекала б завантаження (≈45 с). Не відповіла локальна, то відповідає хмара.
+# Порожньо = завжди хмара, як раніше.
+BRAIN_LOCAL_MODEL   = ""
+BRAIN_FREE_IN_GAME  = True
+BRAIN_PRELOAD       = True
+BRAIN_LOCAL_CONTEXT = 16384    # менше не вистачає великому системному промту
+LMS_EXE = os.path.expanduser(r"~\.lmstudio\bin\lms.exe")
 
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
 
@@ -303,9 +331,11 @@ def _load_config():
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
         "FAST_MODEL", "WAKE_ENGINE", "BRAIN_VAULT",
         "OFFLINE_MODEL", "PIPER_EXE", "PIPER_MODEL", "TOOL_CALLING",
-        "PERSONA_FILE", "TTS_ENGINE", "TTS_HTTP_URL", "TTS_HTTP_MODEL", "TTS_HTTP_VOICE",
+        "PERSONA_FILE", "TTS_ENGINE", "TTS_HTTP_URL", "TTS_HTTP_MODEL", "TTS_HTTP_VOICE", "TTS_HTTP_SERVER",
         "VIBE_ENABLED", "VIBE_INTERVAL", "VIBE_MAX_PER_HOUR", "VIBE_GAME_EVERY_MIN",
         "VIBE_MUSIC_CHANCE", "VIBE_MUSIC_MIN_GAP_MIN", "VIBE_GAME_EXES", "VIBE_GAME_IGNORE",
+        "AVATAR_ENABLED", "AVATAR_URL", "AVATAR_INTERVAL", "AVATAR_DIR", "UI_WINDOW",
+        "BRAIN_LOCAL_MODEL", "BRAIN_FREE_IN_GAME", "BRAIN_PRELOAD", "BRAIN_LOCAL_CONTEXT", "LMS_EXE",
     ]
     applied = []
     for k in simple:

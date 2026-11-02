@@ -60,7 +60,7 @@ def _tap_watcher(e) -> None:
                 _tap_pressed, _tap_combo = False, False
                 if not combo and held < cfg.TAP_MAX_HOLD:
                     if tts._tts_active.is_set():
-                        # Тап, поки Рафаель говорить, просто його перебиває
+                        # Тап, поки Лін говорить, просто її перебиває
                         log.info(f"Тап по {cfg.TAP_TOGGLE_KEY}: зупиняю озвучку")
                         tts._tts_stop.set()
                     elif cfg.TAP_ACTION == "toggle":

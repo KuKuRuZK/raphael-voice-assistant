@@ -1,4 +1,4 @@
-# Рафаель: Ukrainian voice assistant for Windows
+# Лін: Ukrainian voice assistant for Windows
 
 A desktop voice assistant that listens in Ukrainian, understands free-form
 commands through an LLM, and acts: plays music, reads and triages mail, checks
@@ -117,7 +117,7 @@ Settings live in `config.json` (models, hotkeys, thresholds). Keys never go
 there: that file is tracked, `secrets.json` is not.
 
 While the Google OAuth app is in Testing mode, its tokens expire after 7 days.
-Raphael then says which mailbox lost access (once a day, or whenever you ask
+Lin then says which mailbox lost access (once a day, or whenever you ask
 about mail or the calendar). Run `gmail_auth.bat` again (`gmail_auth.bat 2` for
 the second mailbox) and the new token is picked up without a restart.
 

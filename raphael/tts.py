@@ -15,11 +15,13 @@ import subprocess
 import tempfile
 import threading
 import time
+import urllib.parse
 import urllib.request
 
 import edge_tts
 import pygame
 
+from raphael import emotion
 from raphael import runtime
 from raphael import settings as cfg
 
@@ -37,7 +39,7 @@ _VOICE_RATE_MAX   =  60
 _VOICE_RATE_STEP  =  10
 _tts_lock  = threading.Lock()
 _tts_stop  = threading.Event()   # встановити → зупинити TTS достроково
-# Щоб Рафаель не чув сам себе: listen() не пише, поки щось звучить, і відкидає
+# Щоб Лін не чула сама себе: listen() не пише, поки щось звучить, і відкидає
 # запис, під час якого почалась озвучка (фонові потоки говорять коли завгодно).
 _tts_active   = threading.Event()   # зараз грає озвучка
 _tts_epoch    = 0                   # лічильник озвучок, росте на кожній
@@ -148,7 +150,7 @@ def _tts_synth_to(path: str, text: str):
 
 
 # ── Офлайн-голос ──────────────────────────────────────────────────────────────
-# edge-tts це сервіс Microsoft: без інтернету Рафаель раніше просто мовчав.
+# edge-tts це сервіс Microsoft: без інтернету Лін раніше просто мовчала.
 # Якщо поруч лежить Piper (settings: PIPER_EXE, PIPER_MODEL), фраза звучить
 # локальним голосом. Після збою edge-tts хвилину не пробуємо, інакше кожне
 # речення чекало б свій таймаут; фрази з кешу й далі звучать звичним голосом.
@@ -214,6 +216,32 @@ def _http_audio(text: str) -> str:
     with os.fdopen(fd, "wb") as f:
         f.write(audio)
     return tmp
+
+
+def http_server_up(timeout: float = 1.0) -> bool:
+    """Чи слухає хтось порт TTS_HTTP_URL (без синтезу)."""
+    import socket
+    u = urllib.parse.urlsplit(cfg.TTS_HTTP_URL)
+    try:
+        with socket.create_connection((u.hostname or "127.0.0.1", u.port or 80), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def start_http_server() -> bool:
+    """Запустити свій TTS-сервер (TTS_HTTP_SERVER), якщо двигун http і він не відповідає.
+    Поки сервер вантажить модель, говорить edge (див. _engine_audio)."""
+    if cfg.TTS_ENGINE != "http" or not cfg.TTS_HTTP_SERVER or http_server_up():
+        return False
+    cmd = list(cfg.TTS_HTTP_SERVER)
+    if not os.path.exists(cmd[0]):
+        log.warning(f"TTS-сервер: нема {cmd[0]}")
+        return False
+    subprocess.Popen(cmd, cwd=os.path.dirname(cmd[-1]) or None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    log.info(f"TTS-сервер запущено: {' '.join(cmd)}")
+    return True
 
 
 def _engine_audio(text: str):
@@ -346,11 +374,15 @@ def speak_stream(chunks) -> str:
     spoken, failure = [], []
     ready = queue.Queue(maxsize=2)      # синтез щонайбільше на 2 речення наперед
 
+    mood = [None]                       # настрій відповіді: діє з речення з тегом і далі
+
     def _produce():
         try:
             for sentence in _sentences(chunks):
                 if _tts_stop.is_set():
                     break
+                emo, sentence = emotion.take(sentence)          # тег настрою не звучить, а йде тілу
+                mood[0] = emo or mood[0]
                 clean = _strip_md(sentence)
                 if not clean:
                     continue
@@ -362,7 +394,7 @@ def speak_stream(chunks) -> str:
                     log.error(f"TTS помилка: {e}", exc_info=True)
                     break
                 spoken.append(clean)
-                ready.put((clean, audio))
+                ready.put((clean, audio, mood[0]))
         except Exception as e:
             failure.append(e)
             log.error(f"TTS: джерело тексту обірвалось: {e}")
@@ -378,7 +410,7 @@ def speak_stream(chunks) -> str:
                 item = ready.get()
                 if item is None:
                     break
-                text, (path, temporary) = item
+                text, (path, temporary), emo = item
                 try:
                     if _tts_stop.is_set():
                         continue
@@ -392,6 +424,8 @@ def speak_stream(chunks) -> str:
                     log.debug(f"TTS: '{text[:50]}...' " if len(text) > 50 else f"TTS: '{text}'")
                     if runtime.LIN_UI:
                         runtime.LIN_UI.safe_set_state("speaking", text)
+                    from raphael import avatar      # тіло: субтитр і рот у такт звуку
+                    avatar.mind("speaking", text, path, emo)
                     try:
                         _tts_play(path)
                     except Exception as e:

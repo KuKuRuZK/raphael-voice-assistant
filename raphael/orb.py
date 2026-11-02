@@ -1,5 +1,5 @@
 """
-Преміум-орб Рафаеля: офанім із рунами, справжнє сяйво (PIL gaussian blur),
+Преміум-орб Лін: офанім із рунами, справжнє сяйво (PIL gaussian blur),
 прозоре шарове вікно Windows (per-pixel alpha через UpdateLayeredWindow).
 
 Використання з raphael/ui.py (компактний режим):

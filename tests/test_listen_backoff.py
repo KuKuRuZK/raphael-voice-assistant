@@ -42,8 +42,8 @@ def test_missing_mic_backs_off_and_logs_once(env, lin, caplog):
     recognizer.listen = lambda source, timeout, phrase_time_limit: "AUDIO"
     env._saved.append((recognizer, "adjust_for_ambient_noise", recognizer.adjust_for_ambient_noise))
     recognizer.adjust_for_ambient_noise = lambda source, duration: None
-    env.patch("_transcribe_whisper", lambda audio: "рафа")
+    env.patch("_transcribe_whisper", lambda audio: "лін")
     with caplog.at_level(logging.INFO, logger="Лін"):
-        assert stt.listen() == "рафа"
+        assert stt.listen() == "лін"
     assert stt._listen_failures == 0
     assert any("знову працює" in r.getMessage() for r in caplog.records)

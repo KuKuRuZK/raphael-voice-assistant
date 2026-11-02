@@ -51,7 +51,7 @@ def test_briefing_is_not_repeated_after_restart(env, monkeypatch):
     env.patch("BRIEFING_HOUR", datetime.now().hour)
     calls = []
     env.patch("morning_briefing", lambda: calls.append(1))
-    for _ in range(2):                                # два запуски Рафаеля поспіль
+    for _ in range(2):                                # два запуски Лін поспіль
         with pytest.raises(Stop):
             env.get("briefing_loop")()
     assert calls == [1]

@@ -10,7 +10,7 @@ sys.path.insert(0, REPO)
 
 
 def _project_modules():
-    """Усі вже імпортовані модулі Рафаеля: lin.py і пакет raphael/."""
+    """Усі вже імпортовані модулі Лін: lin.py і пакет raphael/."""
     dirs = {REPO, os.path.join(REPO, "raphael")}
     out = []
     for m in list(sys.modules.values()):
@@ -22,7 +22,7 @@ def _project_modules():
 
 class Env:
     """
-    Доступ до імен Рафаеля незалежно від того, в якому модулі вони живуть.
+    Доступ до імен Лін незалежно від того, в якому модулі вони живуть.
     Тести не знають, де саме лежить speak чи _seen_gmail_ids: це дозволяє
     перевіряти поведінку до і після перенесення коду між модулями.
     """
@@ -76,6 +76,7 @@ def env(lin, tmp_path):
     e.patch("_state", None)
     e.patch("_notes_cache", [])
     e.patch("_notes_cache_time", 0.0)
+    e.patch("AVATAR_ENABLED", False)        # тести не говорять зі справжнім тілом на екрані
     yield e
     e.restore()
 

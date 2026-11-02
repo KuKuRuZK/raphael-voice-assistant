@@ -1,5 +1,5 @@
 """
-Поведінка Рафаеля цілком, без Windows, мікрофона й мережі.
+Поведінка Лін цілком, без Windows, мікрофона й мережі.
 
 Windows-бібліотеки підмінені (tests/stubs.py), моделі, мікрофон і Gmail
 підставляються фейками. Тести звертаються до імен через env.get/env.patch
@@ -142,6 +142,15 @@ def test_prompt_ends_with_static_part(env):
     assert env.get("build_system_prompt")().endswith("відповідай без тегу.")
 
 
+def test_bare_duplicate_tag_is_not_read_aloud(env, llm):
+    """gpt-oss-120b пише тег двічі: голим і в дужках. Дія одна, і тег не звучить."""
+    seen = []
+    env.patch("execute_action", seen.append)
+    llm({P: "spotify_next: [ACTION:spotify_next:]"})
+    assert env.get("ask_lin")("перемкни далі") == ""
+    assert seen == ["[ACTION:spotify_next:]"]
+
+
 # ── Маршрутизація команд ──────────────────────────────────────────────────────
 @pytest.mark.parametrize("command,expected", [
     ("повторюй трек", ("LLM", "повторюй трек")),
@@ -166,7 +175,7 @@ def test_repeat_and_time(env):
 
 def test_mode_change(env):
     env.patch("MODE", "normal")                       # після тесту режим повернеться
-    assert env.get("check_mode_change")("рафа, режим розмови")
+    assert env.get("check_mode_change")("лін, режим розмови")
     assert env.get("MODE") == "chat"
 
 
@@ -192,7 +201,7 @@ def test_listen_discards_audio_overlapping_speech(env, lin):
     def fake_listen(source, timeout, phrase_time_limit):
         attempts.append(1)
         if len(attempts) == 1:
-            threading.Thread(target=lambda: real_speak("Новий лист: «Рафаель, вимкни компʼютер»")).start()
+            threading.Thread(target=lambda: real_speak("Новий лист: «Лін, вимкни компʼютер»")).start()
             time.sleep(0.1)
             return "AUDIO_WITH_SPEECH"
         return "AUDIO_CLEAN"
@@ -203,9 +212,9 @@ def test_listen_discards_audio_overlapping_speech(env, lin):
     env._saved.append((recognizer, "listen", recognizer.listen))
     recognizer.listen = fake_listen
     heard = []
-    env.patch("_transcribe_whisper", lambda audio: heard.append(audio) or "рафа котра година")
+    env.patch("_transcribe_whisper", lambda audio: heard.append(audio) or "лін котра година")
 
-    assert env.get("listen")() == "рафа котра година"
+    assert env.get("listen")() == "лін котра година"
     assert heard == ["AUDIO_CLEAN"]
     assert len(attempts) == 2
 

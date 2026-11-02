@@ -40,7 +40,7 @@ def test_warns_once_at_80_and_once_at_100(env, said):
 
 def test_survives_restart_and_resets_next_day(env, said, tmp_path):
     env.get("record")("openai/gpt-oss-120b", tokens=100)
-    env.patch("_state", None)                                   # перезапуск Рафаеля
+    env.patch("_state", None)                                   # перезапуск Лін
     assert "основна модель: 1 запит" in env.get("report_text")()
     path = tmp_path / "usage.json"
     state = json.loads(path.read_text(encoding="utf-8"))

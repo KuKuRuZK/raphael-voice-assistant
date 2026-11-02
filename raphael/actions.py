@@ -42,6 +42,9 @@ def execute_action(action_str: str):
         p = parts[1].strip() if len(parts) > 1 else ""
 
         if   t == "open_app":          pc.open_application(p)
+        elif t == "avatar":
+            from raphael import avatar          # тіло на екрані: «потанцюй», «сядь на вікно»
+            avatar.body(p)
         elif t == "search_web":
             # quote_plus: без нього «C# tutorial» Google отримував як «C»
             url = f"https://www.google.com/search?q={urllib.parse.quote_plus(p)}"

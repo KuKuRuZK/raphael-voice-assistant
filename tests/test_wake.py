@@ -3,7 +3,7 @@
 
 Точність розпізнавання тут не перевіряється (для цього потрібна справжня
 модель і голос), лише логіка: що йде в Whisper, а що ні, і як детектор
-поводиться, поки говорить сам Рафаель.
+поводиться, поки говорить сама Лін.
 """
 import json
 import sys
@@ -54,7 +54,7 @@ def wake(env, monkeypatch):
     """Фейковий Vosk і мікрофон. Повертає лічильник прочитаних шматків."""
     monkeypatch.setitem(sys.modules, "vosk", types.SimpleNamespace(KaldiRecognizer=FakeRecognizer))
     FakeRecognizer.script, FakeRecognizer.instances = [], []
-    env.patch("_get_vosk_model", lambda: FakeModel({"рафаель", "рафа", "привіт"}))
+    env.patch("_get_vosk_model", lambda: FakeModel({"лин", "лінь", "ліна", "привіт"}))
     env.patch("_wake_vocab", None)
     env.patch("TTS_ECHO_TAIL", 0.0)
     reads = {"n": 0, "on_read": None}
@@ -80,25 +80,26 @@ def wake(env, monkeypatch):
     sr = env.get("sr")
     monkeypatch.setattr(sr, "Microphone", Mic)
     heard = []
-    env.patch("_transcribe", lambda audio: heard.append(audio.get_raw_data()) or "рафа котра година")
+    env.patch("_transcribe", lambda audio: heard.append(audio.get_raw_data()) or "лін котра година")
     reads["heard"] = heard
     return reads
 
 
 def test_only_phrase_with_name_goes_to_whisper(env, wake):
     FakeRecognizer.script = [("final", "[unk]"),                         # чужа фраза
-                             None, ("partial", "рафа"), ("final", "рафа [unk]")]
-    assert env.get("wait_for_wake")(timeout=5) == "рафа котра година"
+                             None, ("partial", "лин"), ("final", "лин [unk]")]
+    assert env.get("wait_for_wake")(timeout=5) == "лін котра година"
     assert len(wake["heard"]) == 1
     assert len(wake["heard"][0]) == 3 * CHUNK_BYTES                     # лише друга фраза
 
 
 def test_grammar_holds_only_names_from_model_vocabulary(env, wake):
-    FakeRecognizer.script = [("final", "рафаель")]
+    FakeRecognizer.script = [("final", "лінь")]
     env.get("wait_for_wake")(timeout=5)
     grammar = FakeRecognizer.instances[0].grammar
-    assert "[unk]" in grammar and "рафаель" in grammar and "рафа" in grammar
+    assert "[unk]" in grammar and "лин" in grammar and "лінь" in grammar
     assert "лін" not in grammar                                        # немає в словнику
+    assert "рафаель" not in grammar                                    # колишнє імʼя більше не будить
 
 
 def test_own_speech_restarts_the_phrase(env, wake):
@@ -111,7 +112,7 @@ def test_own_speech_restarts_the_phrase(env, wake):
             active.clear()
 
     wake["on_read"] = during_speech
-    FakeRecognizer.script = [None, None, ("final", "рафа")]
+    FakeRecognizer.script = [None, None, ("final", "лин")]
     try:
         env.get("wait_for_wake")(timeout=5)
     finally:
