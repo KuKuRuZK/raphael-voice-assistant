@@ -459,7 +459,7 @@ _ACTION_PREFIXES = (
     "screen_", "focus_", "memory_", "volume_", "window_", "notepad_",
     "claude_", "ask_", "kill_", "type_", "voice_", "timer", "weather",
     "currency", "hotkey", "shutdown", "get_time", "minimize_", "close_",
-    "vibe_", "avatar", "usage_",
+    "vibe_", "avatar", "usage_", "diary_",
 )
 
 # Дія в дужках, але без двокрапки: «[gmail_unread]»
@@ -493,12 +493,18 @@ def _find_action(reply: str):
                 name != "avatar" or _real_action(name, param)):
             log.info(f"Дія без дужок, приймаю: {name}")
             return name, param, False
+    found = []
     for m in _ACTION_RE.finditer(reply):
         name, param = m.group(1).lower(), m.group(2).strip()
         if name == "action" and ":" not in param:          # «[ACTION:slack_unread]»: без параметра
             name, param = param.lower(), ""
         if _real_action(name, param):
-            return name, param, True
+            found.append((name, param))
+    if found:
+        # Тіло лише прикраса, коли поруч справжня дія: на «пиши» gpt-oss-120b дала
+        # «[ACTION:avatar:type] [ACTION:dictate_type:]» (перевірка 2026-11-03)
+        name, param = next((f for f in found if f[0] != "avatar"), found[0])
+        return name, param, True
     for m in _BRACKET_NAME_RE.finditer(reply):
         name = m.group(1).lower()
         if name != "avatar" and _real_action(name, ""):

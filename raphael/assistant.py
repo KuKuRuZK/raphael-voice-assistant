@@ -15,6 +15,7 @@ import pyautogui
 from raphael import actions
 from raphael import agenda
 from raphael import briefing
+from raphael import diary
 from raphael import dictation
 from raphael import hotkeys
 from raphael import llm
@@ -139,6 +140,7 @@ def ask_lin(user_input: str) -> str:
         history.pop()
         return "Хм, загубила думку. Повтори, будь ласка."
     history.append({"role": "assistant", "content": reply})
+    diary.add(user_input, reply)
 
     # Три формати: [ACTION:type:param], [type:param] і голе type:param
     action_type, action_param, _bracketed = llm._find_action(reply)

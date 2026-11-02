@@ -14,6 +14,7 @@ import pyautogui
 from raphael import agenda
 from raphael import brain
 from raphael import claude_code
+from raphael import diary
 from raphael import dictation
 from raphael import gmail
 from raphael import monitor
@@ -359,6 +360,10 @@ def execute_action(action_str: str):
 
         elif t == "brain_ask":
             brain.brain_ask(p)          # сам скаже відповідь, коли прочитає нотатки
+            return ""
+
+        elif t == "diary_find":
+            diary.ask(p)                # сам скаже, що згадав
             return ""
 
         elif t == "brain_read":

@@ -68,6 +68,8 @@ def test_speech_carries_emotion_to_body_and_not_to_voice(env, tmp_path, monkeypa
     # дія в дужках без двокрапки
     ("[gmail_unread]", ("gmail_unread", "")),
     ("[usage_report:]", ("usage_report", "")),
+    # тег тіла поруч зі справжньою дією не перебиває її
+    ("[EMO:tease][ACTION:avatar:type] [ACTION:dictate_type:]", ("dictate_type", "")),
     # справжня дія тіла лишається
     ("Дивись! [ACTION:avatar:dance]", ("avatar", "dance")),
     # просто слова в дужках не дія

@@ -187,6 +187,7 @@ ALIVE_AFTER  = 120
 # ── Файли даних ───────────────────────────────────────────────────────────────
 NOTES_PATH  = os.path.join(SCRIPT_DIR, "notes.json")    # нотатки й нагадування
 MEMORY_PATH = os.path.join(SCRIPT_DIR, "memory.json")   # памʼять між сесіями
+DIARY_DIR   = os.path.join(SCRIPT_DIR, "diary")         # щоденник розмов (raphael/diary.py)
 USAGE_PATH  = os.path.join(SCRIPT_DIR, "usage.json")    # лічильник денних лімітів
 
 # ── Офлайн ────────────────────────────────────────────────────────────────────
@@ -344,7 +345,7 @@ def _load_config():
         "SYS_MONITOR_ENABLED", "SYS_MONITOR_INTERVAL", "MONITOR_INTERVAL",
         "VISION_MODEL", "CALENDAR_TZ", "CALENDAR_REMIND_MINUTES",
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
-        "FAST_MODEL", "WAKE_ENGINE", "BRAIN_VAULT",
+        "FAST_MODEL", "WAKE_ENGINE", "BRAIN_VAULT", "DIARY_DIR",
         "OFFLINE_MODEL", "PIPER_EXE", "PIPER_MODEL", "TOOL_CALLING",
         "PERSONA_FILE", "TTS_ENGINE", "TTS_HTTP_URL", "TTS_HTTP_MODEL", "TTS_HTTP_VOICE", "TTS_HTTP_SERVER",
         "VIBE_ENABLED", "VIBE_INTERVAL", "VIBE_MAX_PER_HOUR", "VIBE_GAME_EVERY_MIN",

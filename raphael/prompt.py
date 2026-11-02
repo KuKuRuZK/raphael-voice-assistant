@@ -7,6 +7,7 @@ import os
 from datetime import datetime
 
 from raphael import brain
+from raphael import diary
 from raphael import emotion
 from raphael import notes
 from raphael import settings as cfg
@@ -47,8 +48,9 @@ def persona_block() -> str:
 def build_system_prompt() -> str:
     """Будує системний промпт з урахуванням пам'яті."""
     mem = notes.load_memory()
-    memory_block = ""
-    if mem.get("last_session"):
+    # Підсумки минулих днів зі щоденника; поки їх нема, підсумок останнього запуску
+    memory_block = diary.prompt_block()
+    if not memory_block and mem.get("last_session"):
         memory_block = f"Попередня сесія: {mem['last_session']} "
     if mem.get("user_name"):
         memory_block += f"Ім'я користувача: {mem['user_name']}. "
@@ -127,6 +129,7 @@ def build_system_prompt() -> str:
         "brain_idea:текст — записати в ІДЕЇ сховища | "
         "brain_ask:питання — знайти відповідь у нотатках сховища й відповісти | "
         "brain_read:назва — коротко про що конкретна нотатка | "
+        "diary_find:питання — згадати зі щоденника, про що ви говорили раніше | "
         "dictate_type: — почати диктовку і надрукувати її туди, де стоїть курсор | "
         "dictate_last: — знову покласти останню диктовку в буфер обміну | "
         "dictate_to_brain: — зберегти останню диктовку у Вхідні сховища | "
@@ -185,6 +188,7 @@ def build_system_prompt() -> str:
         "Диктовка в поле, де стоїть курсор: голе 'пиши', 'друкуй' → dictate_type: (Влад продиктує окремо); "
         "'пиши наступне: …', 'надрукуй що …' → dictate_type:сам текст; 'що я диктував', 'поверни диктовку' → dictate_last:; "
         "'збережи диктовку в мозок' → dictate_to_brain:. "
+        "Минуле: 'про що ми вчора говорили', 'що я казав про ARK', 'памʼятаєш, я розповідав…' → diary_find:питання. "
         "ЗАПИС: усе, що Влад просить записати, йде у СХОВИЩЕ Obsidian, а не у твої нотатки: "
         "'в плани' → brain_plan:текст; 'ідея', 'в ідеї' → brain_idea:текст; "
         "'запиши', 'занотуй', 'в мозок', 'у вхідні', 'не забути' → brain_add:текст. "
