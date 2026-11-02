@@ -19,7 +19,8 @@ Personal project, built and used daily.
 | **Mail** | two Gmail accounts, 11-category triage, only what matters is spoken aloud |
 | **Calendar** | today / tomorrow / week, new events by voice, a spoken reminder 10 minutes before each event |
 | **Music** | full Spotify control |
-| **Vision** | screenshots described by a vision model on request |
+| **Vision** | the monitor with the active window described by a vision model on request, with a second model as fallback |
+| **Memory** | a local diary of every exchange: the talk survives a restart, past days are summarised into the prompt, "що я казав про…" searches it |
 | **Dictation** | speaks into the cursor, or straight into an Obsidian vault |
 | **Second brain** | searches a personal Obsidian vault and answers from it |
 | **System** | CPU / RAM / disk / battery monitoring with spoken warnings |
@@ -59,7 +60,11 @@ a minute of silence. Short, unambiguous commands ("пауза", "наступн�
 
 Free tiers have daily limits. On gpt-oss-120b the daily token budget (200K) is
 likely to run out before the 1000 requests, because every request carries the
-whole system prompt (about 8.6K characters). [`usage.py`](raphael/usage.py) counts requests, tokens and seconds of
+whole system prompt (about 11K characters, ~4K tokens). The tighter limit is per
+minute: Groq allows 8000 tokens a minute per model and reserves `max_tokens` up
+front, so two questions in a row could hit a 429. A short wait-and-retry, a
+spare Groq model with its own bucket (`GROQ_SPARE_MODEL`) right after the main
+one, and game comments on their own model (`VIBE_MODEL`) keep answers coming. [`usage.py`](raphael/usage.py) counts requests, tokens and seconds of
 audio per model per day (tokens as the provider reports them), warns once at
 80% and at 100%, and answers "скільки лімітів". It is a local estimate: the
 limits in `DAILY_LIMITS` are overridable in `config.json`.
@@ -97,6 +102,16 @@ git-ignored, [`persona.example.txt`](persona.example.txt) shows the format.
 or a known exe) and track changes in Spotify, drops a short line now and then
 (at most four an hour, never while speaking, listening or in focus mode), and
 tells the model what is playing so ordinary answers stay on topic.
+
+**Memory and trust.** [`diary.py`](raphael/diary.py) appends every exchange to
+`diary/YYYY-MM-DD.jsonl` (local and git-ignored, like the log). After a restart
+the last few exchanges come back if the talk was recent; every few hours past
+days get a one or two sentence summary in `memory.json`, and the last two go
+into the prompt. [`trust.py`](raphael/trust.py) keeps a trust level that grows
+with time together and kind words, drops with rude ones and slowly while Vlad is
+away; away from the usual level it adds one line that sets how warm she is.
+The mood tag of each sentence (`[EMO:x]`) also reaches the voice server, which
+turns it into tempo, pitch and loudness.
 
 **Resilience.** `start.bat` restarts the process if it crashes; if it dies on
 start five times in a row it stops and points to `crash.log`, where startup
