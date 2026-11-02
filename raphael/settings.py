@@ -140,6 +140,9 @@ MAIL_TRIAGE_ENABLED = True
 
 # ── Vision (бачення екрану) ───────────────────────────────────────────────────
 VISION_MODEL = "gemini:gemini-3.1-flash-lite"   # на Groq зору немає; lite бо 500/добу
+# Якщо VISION_MODEL не відповіла (Gemini буває 503 і тайм-аути). qwen3.8 на Groq бачить
+# картинки: помилку з терміналу прочитала за 0,6 с проти 4 с у Gemini (2026-11-03)
+VISION_FALLBACK_MODEL = "qwen/qwen3.8-27b"
 
 # ── Моніторинг (проактивні сповіщення) ────────────────────────────────────────
 MONITOR_INTERVAL = 120   # секунд між перевіркою пошти/слаку
@@ -343,7 +346,7 @@ def _load_config():
         "BRAIN_HOTKEY", "BRAIN_DICTATE_LIMIT", "BRAIN_PAUSE_THRESHOLD",
         "TAP_TOGGLE_KEY", "TAP_MAX_HOLD", "TAP_ACTION",
         "SYS_MONITOR_ENABLED", "SYS_MONITOR_INTERVAL", "MONITOR_INTERVAL",
-        "VISION_MODEL", "CALENDAR_TZ", "CALENDAR_REMIND_MINUTES",
+        "VISION_MODEL", "VISION_FALLBACK_MODEL", "CALENDAR_TZ", "CALENDAR_REMIND_MINUTES",
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
         "FAST_MODEL", "WAKE_ENGINE", "BRAIN_VAULT", "DIARY_DIR",
         "OFFLINE_MODEL", "PIPER_EXE", "PIPER_MODEL", "TOOL_CALLING",

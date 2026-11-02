@@ -5,6 +5,7 @@
 import difflib
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -326,10 +327,43 @@ def _clipboard_set(text: str) -> str:
 #  VISION — БАЧЕННЯ ЕКРАНУ
 # ============================================================
 
-def _capture_screen_b64(max_side: int = 1280, quality: int = 70) -> str:
-    """Знімає екран, стискає і повертає base64 JPEG."""
+def _active_monitor_bbox():
+    """Межі монітора з активним вікном у координатах усього робочого столу, або None.
+    Моніторів два, а pyautogui.screenshot() знімає лише основний: питання «що це за
+    помилка» про вікно на другому моніторі отримувало опис зовсім іншого екрана."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class MONITORINFO(ctypes.Structure):
+            _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                        ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+        user32 = ctypes.windll.user32
+        user32.MonitorFromWindow.restype = wintypes.HANDLE
+        user32.MonitorFromWindow.argtypes = [wintypes.HWND, wintypes.DWORD]
+        user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFO)]
+        monitor = user32.MonitorFromWindow(user32.GetForegroundWindow(), 2)   # MONITOR_DEFAULTTONEAREST
+        info = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+        if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return None
+        r = info.rcMonitor
+        return r.left, r.top, r.right, r.bottom
+    except Exception as e:
+        log.debug(f"Монітор активного вікна: {e}")
+        return None
+
+
+def _capture_screen_b64(max_side: int = 1600, quality: int = 75) -> str:
+    """Знімає монітор з активним вікном, стискає і повертає base64 JPEG.
+    1600 по довшій стороні, а не 1280: на 2560 пікселях дрібний текст терміналу
+    інакше розпливався, а «що тут написано» якраз про нього."""
     import base64, io
-    img = pyautogui.screenshot()
+    bbox = _active_monitor_bbox()
+    if bbox:
+        from PIL import ImageGrab
+        img = ImageGrab.grab(bbox=bbox, all_screens=True)
+    else:
+        img = pyautogui.screenshot()
     img.thumbnail((max_side, max_side))
     buf = io.BytesIO()
     img.convert("RGB").save(buf, format="JPEG", quality=quality)
@@ -338,37 +372,40 @@ def _capture_screen_b64(max_side: int = 1280, quality: int = 70) -> str:
 
 def _screen_look(question: str = "") -> None:
     """
-    Дивиться на поточний екран через Groq vision-модель і озвучує.
+    Дивиться на поточний екран через модель із зором і озвучує.
     question — якщо задано, відповідає на конкретне питання про екран.
     """
-    if not cfg.VISION_MODEL:
-        # Groq прибрав llama-4-scout, іншої моделі із зображеннями там більше
-        # немає (перевірено списком моделей 2026-08-15). Краще чесно сказати,
-        # ніж падати з 404 на кожен запит про екран.
+    models = [m for m in (cfg.VISION_MODEL, cfg.VISION_FALLBACK_MODEL) if m]
+    if not models:
         log.warning("Screen look: vision-модель не налаштована")
-        tts.speak("Зараз не бачу екран: у Groq більше немає моделі із зображеннями.")
+        tts.speak("Зараз не бачу екран: не налаштована модель із зором.")
         return
     try:
         b64 = _capture_screen_b64()
-        prompt = question.strip() or "Що зараз на екрані? Опиши коротко українською, одне-два речення."
-        prompt += " Відповідай ТІЛЬКИ українською, без англійської."
-        resp = llm.llm_chat(
-            cfg.VISION_MODEL,
-            fallback=False,          # резервна gpt-oss на Groq картинок не бачить
-            messages=[{"role": "user", "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url",
-                 "image_url": {"url": "data:image/jpeg;base64," + b64}},
-            ]}],
-            max_tokens=200,
-            temperature=0.3,
-        )
-        answer = resp.choices[0].message.content.strip()
-        log.info(f"Screen look: '{answer[:100]}'")
-        tts.speak(answer)
     except Exception as e:
-        log.error(f"Screen look: {e}", exc_info=True)
-        tts.speak("Не вдалося подивитись на екран.")
+        log.error(f"Screen look: знімок не вийшов: {e}", exc_info=True)
+        tts.speak("Не вдалося зняти екран.")
+        return
+    prompt = question.strip() or "Що зараз на екрані? Опиши коротко українською, одне-два речення."
+    prompt += " Відповідай ТІЛЬКИ українською, без англійської, звичайним текстом без розмітки."
+    messages = [{"role": "user", "content": [
+        {"type": "text", "text": prompt},
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64," + b64}},
+    ]}]
+    for model in models:
+        try:
+            # fallback=False: звичайний резерв (gpt-oss, локальна) картинок не бачить
+            resp = llm.llm_chat(model, fallback=False, messages=messages, max_tokens=300, temperature=0.3)
+            answer = (resp.choices[0].message.content or "").strip()
+            if not answer:
+                continue
+            answer = re.sub(r"[`*_#]+", "", answer)        # розмітку не зачитуємо
+            log.info(f"Screen look ({model}): '{answer[:100]}'")
+            tts.speak(answer)
+            return
+        except Exception as e:
+            log.warning(f"Screen look: {model} не відповіла: {e}")
+    tts.speak("Не вдалося подивитись на екран: моделі із зором не відповіли.")
 
 
 SHUTDOWN_DELAY = 30   # секунд до вимкнення/ребуту: час передумати
