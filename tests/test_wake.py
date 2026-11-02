@@ -45,7 +45,7 @@ class FakeModel:
     def __init__(self, vocab):
         self.vocab = vocab
 
-    def find_word(self, word):
+    def vosk_model_find_word(self, word):     # так метод зветься у справжньому vosk 0.3.45
         return 1 if word in self.vocab else -1
 
 
@@ -145,3 +145,10 @@ def test_microphone_error_falls_back(env, wake, monkeypatch):
     monkeypatch.setattr(env.get("sr"), "Microphone", broken)
     env.patch("time", types.SimpleNamespace(monotonic=__import__("time").monotonic, sleep=lambda s: None))
     assert env.get("wait_for_wake")(timeout=5) is None
+
+
+def test_fake_model_matches_real_vosk():
+    """Фейк вище мусить мати ті самі методи, що справжня модель: колись тут був
+    find_word, якого у vosk нема, і всі тести були зелені, а детектор падав наживо."""
+    vosk = pytest.importorskip("vosk")
+    assert callable(getattr(vosk.Model, "vosk_model_find_word", None))

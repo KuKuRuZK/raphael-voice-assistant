@@ -6,6 +6,7 @@ import json
 import logging
 import os
 import re
+import time
 
 from raphael import emotion
 from raphael import runtime
@@ -24,6 +25,9 @@ _COMMAND_HINTS = (
     "спотіфай", "spotify", "дискорд", "телеграм", "хром", "браузер",
     "що на екрані", "сховай", "згорни", "розгорни", "перемкни",
     "що в пошті", "плейлист", "шафл", "перемішай", "стеж за",
+    # Пошук: локальна gpt-oss-20b тут «вирішує» викликати функцію, якої в неї нема,
+    # і повертає порожньо (3 з 4 спроб у перевірці 2026-11-03). Хай одразу хмара
+    "знайди", "пошукай", "загугли", "погугли",
 )
 
 # Теми, де 8b помиляється дорого: або треба розібрати параметри (текст|час),
@@ -167,10 +171,49 @@ class LLMUnavailable(Exception):
         online = [e for m, e in self.errors if not _is_local(m)]
         return bool(online) and all(_is_rate_limit(e) for e in online)
 
+    @property
+    def minute_limited(self) -> bool:
+        """Хоч одна хмарна модель уперлась у ліміт, який мине за кілька десятків секунд
+        (а не денний): тоді чесно «спитай за хвилинку», а не «денний ліміт вичерпано»."""
+        waits = [_retry_after(e) for m, e in self.errors if not _is_local(m)]
+        return any(w is not None and w < 120 for w in waits)
+
 
 def _is_rate_limit(e) -> bool:
     s = str(e).lower()
     return "429" in s or "rate_limit" in s or "rate limit" in s or "quota" in s
+
+
+# Якщо після 429 чекати не довше цього, чекаємо і питаємо ту саму модель ще раз:
+# це швидше й розумніше, ніж іти на слабший резерв
+RATE_WAIT = 3.0
+
+
+def _retry_after(e):
+    """Скільки секунд провайдер просить почекати після 429. None: не ліміт або не сказав."""
+    if not _is_rate_limit(e):
+        return None
+    headers = getattr(getattr(e, "response", None), "headers", None)
+    try:
+        if headers is not None and headers.get("retry-after"):
+            return float(headers.get("retry-after"))
+    except (TypeError, ValueError):
+        pass
+    m = re.search(r"try again in (?:(\d+)m)?([\d.]+)s", str(e))     # Groq пише це й у тексті
+    return int(m.group(1) or 0) * 60 + float(m.group(2)) if m else None
+
+
+def _patient(model: str, call):
+    """call(model); на коротке 429 (до RATE_WAIT с) одна пауза і ще одна спроба."""
+    try:
+        return call(model)
+    except Exception as e:
+        wait = _retry_after(e)
+        if wait is None or wait > RATE_WAIT:
+            raise
+        log.info(f"LLM {model}: ліміт за хвилину, чекаю {wait:.1f} с і питаю ще раз")
+        time.sleep(wait + 0.2)
+        return call(model)
 
 
 def _fallback_for(model: str) -> str:
@@ -196,6 +239,9 @@ def _candidates(model: str, fallback) -> list:
     for m in extra:
         if m and m not in out:
             out.append(m)
+    spare = cfg.GROQ_SPARE_MODEL                    # той самий Groq, але окремий ліміт за хвилину
+    if spare and cfg.GROQ_PRIMARY_MODEL in out and spare not in out:
+        out.insert(out.index(cfg.GROQ_PRIMARY_MODEL) + 1, spare)
     return out
 
 
@@ -225,8 +271,19 @@ def _llm_call(model: str, messages, **kw):
     cli, bare = _llm(model)
     if _is_local(model):
         kw.pop("tools", None)             # локальні моделі функцій часто не вміють
-    resp = cli.chat.completions.create(model=bare, messages=messages,
-                                       **_model_kwargs(bare), **kw)
+    # gpt-oss-20b у LM Studio інколи пропускає службовий токен свого формату
+    # («<|channel|>final» без «<|message|>»), і сервер віддає 400 «does not match
+    # the expected peg-native format». Це випадковість: у перевірці 2026-11-03 так
+    # падав кожен пʼятий запит, а після двох повторів лишилось ≈1 з 30.
+    for attempt in range(3):
+        try:
+            resp = cli.chat.completions.create(model=bare, messages=messages,
+                                               **_model_kwargs(bare), **kw)
+            break
+        except Exception as e:
+            if attempt == 2 or not (_is_local(model) and "does not match the expected" in str(e)):
+                raise
+            log.info(f"LLM {model}: зламаний формат відповіді, питаю ще раз")
     usage.record(model, tokens=_usage_tokens(resp))
     for choice in getattr(resp, "choices", None) or []:
         msg = getattr(choice, "message", None)
@@ -250,7 +307,7 @@ def llm_chat(model: str, messages, fallback=None, **kw):
     candidates, errors = _candidates(model, fallback), []
     for m in candidates:
         try:
-            resp = _llm_call(m, messages, **kw)
+            resp = _patient(m, lambda m: _llm_call(m, messages, **kw))
             if _is_local(m) and m is not candidates[-1]:
                 _check_local_reply(resp)
             return resp
@@ -334,7 +391,7 @@ def llm_stream(model: str, messages, fallback=None, **kw):
     candidates, errors = _candidates(model, fallback), []
     for m in candidates:
         try:
-            first, rest = _open(m)
+            first, rest = _patient(m, _open)
             break
         except Exception as e:
             errors.append((m, e))
@@ -402,22 +459,50 @@ _ACTION_PREFIXES = (
     "screen_", "focus_", "memory_", "volume_", "window_", "notepad_",
     "claude_", "ask_", "kill_", "type_", "voice_", "timer", "weather",
     "currency", "hotkey", "shutdown", "get_time", "minimize_", "close_",
-    "vibe_", "avatar",
+    "vibe_", "avatar", "usage_",
 )
+
+# Дія в дужках, але без двокрапки: «[gmail_unread]»
+_BRACKET_NAME_RE = re.compile(r"\[\s*([a-z][a-z_]{2,24})\s*\]", re.I)
+
+
+def _real_action(name: str, param: str) -> bool:
+    """Відомий тип дії, а для тіла ще й відома дія тіла. gpt-oss дописує вигадане
+    «[ACTION:avatar:none]» до зовсім іншої команди («spotify_shuffle:on [ACTION:avatar:none]»),
+    і вигаданий тег у дужках перебивав справжню дію (перевірка 2026-11-03)."""
+    if not _plausible_action(name):
+        return False
+    if name == "avatar":
+        from raphael import avatar                   # avatar сам тягне llm
+        return param in avatar.BODY
+    return True
 
 
 def _find_action(reply: str):
-    """Шукає дію спершу в дужках, потім у голому вигляді. → (тип, параметр, чи_в_дужках)."""
+    """Шукає дію: голу на самому початку, потім у дужках. → (тип, параметр, чи_в_дужках).
+    Гола на початку перша, бо так модель і пише справжню дію, а в дужки слідом дописує
+    зайве: «dictate_last:[ACTION:avatar:type]», «system_info:[ACTION:system_health]»,
+    «note_remind:мама|21:00 [ACTION:note_remind]» (перевірка 2026-11-03, gpt-oss-20b).
+    Вигадані теги пропускає й шукає далі."""
     reply = emotion.EMO_RE.sub("", reply or "").strip()    # «[EMO:happy] note_remind:…»: голий тег після настрою
-    m = _ACTION_RE.search(reply)
-    if m:
-        return m.group(1).lower(), m.group(2).strip(), True
-    m = _BARE_ACTION_RE.match(reply or "")
+    m = _BARE_ACTION_RE.match(reply)
     if m:
         name = m.group(1).lower()
-        if name.startswith(_ACTION_PREFIXES) or name in ("weather", "timer", "hotkey"):
+        param = re.split(r"\s*\[", m.group(2), maxsplit=1)[0].strip().rstrip(";,")   # без тегів, дописаних слідом
+        if (name.startswith(_ACTION_PREFIXES) or name in ("weather", "timer", "hotkey")) and (
+                name != "avatar" or _real_action(name, param)):
             log.info(f"Дія без дужок, приймаю: {name}")
-            return name, m.group(2).strip(), False
+            return name, param, False
+    for m in _ACTION_RE.finditer(reply):
+        name, param = m.group(1).lower(), m.group(2).strip()
+        if name == "action" and ":" not in param:          # «[ACTION:slack_unread]»: без параметра
+            name, param = param.lower(), ""
+        if _real_action(name, param):
+            return name, param, True
+    for m in _BRACKET_NAME_RE.finditer(reply):
+        name = m.group(1).lower()
+        if name != "avatar" and _real_action(name, ""):
+            return name, "", True
     return None, None, False
 
 

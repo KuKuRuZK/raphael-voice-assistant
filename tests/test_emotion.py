@@ -52,3 +52,28 @@ def test_speech_carries_emotion_to_body_and_not_to_voice(env, tmp_path, monkeypa
     moods = [(d["text"], d.get("emo")) for p, d in sent if p == "/mind" and d["state"] == "speaking"]
     assert moods == [("Ну все, досить, я серйозно кажу.", "angry"), ("Друге речення теж довге, щоб окремо.", "angry")]
     assert not any("EMO" in t for t in synth)
+
+
+@pytest.mark.parametrize("reply,expected", [
+    # вигаданий тег тіла слідом за справжньою дією (перевірка 2026-11-03, gpt-oss-20b)
+    ("[EMO:smug]spotify_shuffle:on [ACTION:avatar:none]", ("spotify_shuffle", "on")),
+    ("[EMO:sly] note_remind:пиття води|30; [ACTION:avatar:remind]", ("note_remind", "пиття води|30")),
+    # дія без параметра у форматі ACTION
+    ("[EMO:smug] slack_unread:[ACTION:slack_unread]", ("slack_unread", "")),
+    # гола дія на початку важить більше за тег у дужках слідом
+    ("[EMO:tease]dictate_last:[ACTION:avatar:type]", ("dictate_last", "")),
+    ("[EMO:sly] system_info:[ACTION:system_health]", ("system_info", "")),
+    ("[EMO:tease] note_remind:подзвонити мамі|21:00 [ACTION:note_remind]", ("note_remind", "подзвонити мамі|21:00")),
+    ("[ACTION:gmail_unread]", ("gmail_unread", "")),
+    # дія в дужках без двокрапки
+    ("[gmail_unread]", ("gmail_unread", "")),
+    ("[usage_report:]", ("usage_report", "")),
+    # справжня дія тіла лишається
+    ("Дивись! [ACTION:avatar:dance]", ("avatar", "dance")),
+    # просто слова в дужках не дія
+    ("[посміхається] Ну привіт.", (None, None)),
+    ("[ACTION:avatar:none]", (None, None)),
+])
+def test_find_action_skips_made_up_tags(lin, reply, expected):
+    from raphael import llm
+    assert llm._find_action(reply)[:2] == expected

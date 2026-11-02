@@ -90,8 +90,14 @@ def _can_talk() -> bool:
 def _line(situation: str) -> str:
     """Коротка репліка від себе під ситуацію (без озвучки)."""
     from raphael import prompt          # prompt сам імпортує vibes
+    model, fallback = llm.main_model(), None
+    if cfg.VIBE_MODEL and not llm._is_local(model):
+        # Мозок у хмарі (гра): репліка йде на свою модель і без резерву, щоб не
+        # зʼїсти ліміт за хвилину, потрібний на відповіді Владу. Не вийшло: змовчить
+        model, fallback = cfg.VIBE_MODEL, False
     resp = llm.llm_chat(
-        llm.main_model(),
+        model,
+        fallback=fallback,
         messages=prompt.inject_time([
             {"role": "system", "content": prompt.persona_block() + " "
              "Зараз ти сама, без запиту, вставляєш одну коротку репліку вголос: до 15 слів, "

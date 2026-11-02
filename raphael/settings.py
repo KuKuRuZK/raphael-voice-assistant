@@ -55,6 +55,14 @@ GROQ_PRIMARY_MODEL  = "openai/gpt-oss-120b"        # Groq, 1000/добу, reason
 GROQ_FALLBACK_MODEL = "gemini:gemini-3.1-flash-lite"  # інший провайдер, 500/добу
 # qwen/qwen3.6-27b у резерв НЕ беремо: вигадує власні теги —
 # [Action:...], [DODATOK:...], [Pause Spotify] — Лін їх не розпізнає.
+# Безкоштовний Groq рахує ліміт токенів за хвилину окремо для кожної моделі: 8000
+# у gpt-oss-120b, а один запит Лін з усіма інструкціями ≈5 тис. Тож друге питання
+# за хвилину впиралось у 429 (лог 2026-11-02, 23:31). Запасна модель Groq має свій
+# ліміт і відповідає за секунду, тому стоїть у черзі одразу за основною.
+GROQ_SPARE_MODEL = "openai/gpt-oss-20b"
+# Коментарі до гри й музики, коли мозок у хмарі (гра): своя модель і свій ліміт,
+# щоб репліки сама від себе не зʼїдали ліміт відповідей Владу. "" = основна модель.
+VIBE_MODEL = "qwen/qwen3.8-27b"
 # Імʼя Лін і те, на що його перекручує розпізнавання (Vosk знає «лин», «ліна», «лінь»;
 # «лін» у його словнику нема). Колишнє імʼя (Рафаель) прибрано 2026-11-02.
 WAKE_WORDS = {"лін", "лин", "lin", "linz", "lynn", "ліна", "лінь",
@@ -77,6 +85,10 @@ PAUSE_THRESHOLD = 0.9
 #   "vosk"     імʼя шукає Vosk локально, у Whisper іде лише фраза з імʼям
 #              (потрібна модель vosk-model-uk і імʼя в її словнику, інакше
 #              Лін сама повернеться до "whisper" і напише про це в лог)
+# "vosk" поки НЕ вмикати. Перевірка 2026-11-03 (фрази голосом Лін і чоловічим
+# edge-tts, з шумом): граматика з імен впізнала «Лін» в 1 фразі з 8, бо короткі
+# імена тонуть у [unk]; повне розпізнавання чує «селін», «лінза», «він» (0-5 з 8).
+# Для Vosk «Лін» надто коротке й рідкісне слово.
 WAKE_ENGINE = "whisper"
 
 # Якщо True — Лін запитає підтвердження перед відкриттям програм/браузера
@@ -218,6 +230,8 @@ TTS_HTTP_SERVER = []
 # змінюй у config.json (DAILY_LIMITS). Модель без ліміту тут просто рахується.
 DAILY_LIMITS = {
     "groq:openai/gpt-oss-120b":     {"requests": 1000, "tokens": 200_000},
+    "groq:openai/gpt-oss-20b":      {"requests": 1000},     # запасна (заголовки Groq, 2026-11-03)
+    "groq:qwen/qwen3.8-27b":        {"requests": 1000},     # репліки до гри й музики
     "groq:whisper-large-v3-turbo":  {"requests": 2000, "seconds": 28_800},
     "gemini:gemini-3.1-flash-lite": {"requests": 500},
 }
@@ -322,7 +336,8 @@ def _load_config():
     g = globals()
     simple = [
         "WEATHER_CITY", "VOICE", "VOICE_RATE", "VOICE_PITCH", "CONFIRM_ACTIONS",
-        "GROQ_PRIMARY_MODEL", "GROQ_FALLBACK_MODEL", "GROQ_API_KEY", "SLACK_TOKEN",
+        "GROQ_PRIMARY_MODEL", "GROQ_FALLBACK_MODEL", "GROQ_SPARE_MODEL", "VIBE_MODEL",
+        "GROQ_API_KEY", "SLACK_TOKEN",
         "BRIEFING_HOUR", "PUSH_TO_TALK", "PTT_HOTKEY", "PTT_TOGGLE_HOTKEY",
         "BRAIN_HOTKEY", "BRAIN_DICTATE_LIMIT", "BRAIN_PAUSE_THRESHOLD",
         "TAP_TOGGLE_KEY", "TAP_MAX_HOLD", "TAP_ACTION",

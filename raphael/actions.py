@@ -168,7 +168,7 @@ def execute_action(action_str: str):
                         results = sp.search(q=p, type="track", limit=1)
                         tracks = results.get("tracks", {}).get("items", [])
                         if tracks:
-                            sp.start_playback(uris=[tracks[0]["uri"]])
+                            music.with_device(sp, lambda: sp.start_playback(uris=[tracks[0]["uri"]]))
                             log.info(f"Spotify API play: {tracks[0]['name']}")
                             played = True
                     except Exception as e:
@@ -194,7 +194,7 @@ def execute_action(action_str: str):
             sp = music._get_spotipy()
             if sp:
                 try:
-                    sp.next_track(); log.info("Spotify API: next")
+                    music.with_device(sp, sp.next_track); log.info("Spotify API: next")
                 except Exception as e:
                     log.warning(f"Spotify next API fail: {e}"); pyautogui.hotkey("nexttrack")
             else:
@@ -204,7 +204,7 @@ def execute_action(action_str: str):
             sp = music._get_spotipy()
             if sp:
                 try:
-                    sp.previous_track(); log.info("Spotify API: prev")
+                    music.with_device(sp, sp.previous_track); log.info("Spotify API: prev")
                 except Exception as e:
                     log.warning(f"Spotify prev API fail: {e}"); pyautogui.hotkey("prevtrack")
             else:

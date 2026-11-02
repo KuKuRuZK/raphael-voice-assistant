@@ -77,6 +77,12 @@ def env(lin, tmp_path):
     e.patch("_notes_cache", [])
     e.patch("_notes_cache_time", 0.0)
     e.patch("AVATAR_ENABLED", False)        # тести не говорять зі справжнім тілом на екрані
+    # ...і не будять справжню модель: розігрів після local_preload питав LM Studio,
+    # і той сам вантажив Gemma на 15 ГБ поруч із робочою моделлю (2026-11-03)
+    e.patch("_warm_up", lambda model: None)
+    # Запасна модель Groq і окрема модель для реплік: лише в тестах про них (test_rate_limit)
+    e.patch("GROQ_SPARE_MODEL", "")
+    e.patch("VIBE_MODEL", "")
     yield e
     e.restore()
 

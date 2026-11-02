@@ -319,7 +319,7 @@ def _vosk_wake_words():
         return None
     if _wake_vocab is None:
         try:
-            _wake_vocab = sorted(w for w in cfg.WAKE_WORDS if model.find_word(w) != -1)
+            _wake_vocab = sorted(w for w in cfg.WAKE_WORDS if model.vosk_model_find_word(w) != -1)
         except Exception as e:
             log.error(f"Локальний детектор імені: словник моделі недоступний: {e}")
             _wake_vocab = []

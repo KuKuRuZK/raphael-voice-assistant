@@ -62,3 +62,49 @@ def test_lmstudio_errors_do_not_hide_cloud_rate_limit(lin):
                             ("lmstudio:gemma", ConnectionError("refused"))])
     assert e.rate_limited
 
+
+
+def _flaky_client(failures, calls):
+    class Client:
+        class chat:
+            class completions:
+                @staticmethod
+                def create(model, messages, **kw):
+                    calls.append(model)
+                    if len(calls) <= failures:
+                        raise Exception("Error code: 400 - The model produced output that does not "
+                                        "match the expected peg-native format")
+                    return fake_reply("Ага.")
+    return Client
+
+
+@pytest.mark.parametrize("failures,ok", [(1, True), (2, True), (3, False)])
+def test_local_broken_format_is_asked_again(lin, env, failures, ok):
+    """gpt-oss-20b у LM Studio інколи ламає службовий формат (400): двічі питаємо ще раз."""
+    from raphael import llm
+    calls = []
+    env.patch("_llm", lambda model: (_flaky_client(failures, calls), model.partition(":")[2]))
+    if ok:
+        assert llm._llm_call("lmstudio:openai/gpt-oss-20b", []).choices[0].message.content == "Ага."
+    else:
+        with pytest.raises(Exception, match="peg-native"):
+            llm._llm_call("lmstudio:openai/gpt-oss-20b", [])
+    assert len(calls) == min(failures + 1, 3)
+
+
+def test_cloud_broken_format_is_not_repeated(lin, env):
+    from raphael import llm
+    calls = []
+    env.patch("_llm", lambda model: (_flaky_client(1, calls), model))
+    with pytest.raises(Exception):
+        llm._llm_call("openai/gpt-oss-120b", [])
+    assert len(calls) == 1                     # хмару не смикаємо: там резервна модель
+
+
+@pytest.mark.parametrize("text", ["знайди скільки коштує rtx 5090", "пошукай рецепт борщу", "загугли курс злотого"])
+def test_search_goes_to_cloud(lin, env, text):
+    from raphael import llm
+    env.patch("BRAIN_LOCAL_MODEL", "lmstudio:openai/gpt-oss-20b")
+    env.patch("GAME", None)
+    env.patch("FAST_MODEL", "")
+    assert llm._choose_model(text) == env.get("GROQ_PRIMARY_MODEL")

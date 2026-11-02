@@ -84,3 +84,11 @@ def test_failed_call_is_not_counted(env, said):
 @pytest.mark.parametrize("text", ["скільки лімітів лишилось", "Ліміти?", "які ліміти"])
 def test_usage_phrases(text):
     assert vr.instant_command(text) == "usage_report"
+
+
+def test_local_model_is_not_counted_as_groq(env, said):
+    from raphael import usage
+    env.patch("BRAIN_LOCAL_MODEL", "lmstudio:openai/gpt-oss-20b")
+    assert usage.key("lmstudio:openai/gpt-oss-20b") == "lmstudio:openai/gpt-oss-20b"
+    usage.record("lmstudio:openai/gpt-oss-20b", tokens=100)
+    assert "локальна модель" in usage.report_text()

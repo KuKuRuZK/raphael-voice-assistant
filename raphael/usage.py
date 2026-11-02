@@ -31,7 +31,8 @@ _KINDS = {"requests": ("запит", "запити", "запитів"),
 def key(model: str) -> str:
     """Ключ лічильника «провайдер:модель»; без префікса модель на Groq."""
     prov, sep, bare = (model or "").partition(":")
-    return model if sep and prov in ("groq", "gemini", "local") else f"groq:{model}"
+    # lmstudio теж провайдер: раніше локальна модель писалась як «groq:lmstudio:…»
+    return model if sep and prov in ("groq", "gemini", "local", "lmstudio") else f"groq:{model}"
 
 
 def _load() -> dict:
@@ -69,6 +70,12 @@ def _name(k: str) -> str:
         return "зір"
     if "whisper" in k:
         return "розпізнавання мови"
+    if cfg.BRAIN_LOCAL_MODEL and k == key(cfg.BRAIN_LOCAL_MODEL):
+        return "локальна модель"
+    if cfg.GROQ_SPARE_MODEL and k == key(cfg.GROQ_SPARE_MODEL):
+        return "запасна модель"
+    if cfg.VIBE_MODEL and k == key(cfg.VIBE_MODEL):
+        return "модель для реплік"
     return k.split(":", 1)[-1]
 
 

@@ -4,7 +4,9 @@ Spotify: відтворення, пауза, гучність, плейлист�
 """
 import difflib
 import logging
+import os
 import threading
+import time
 
 import pyautogui
 
@@ -23,6 +25,48 @@ _spotify_problem = ""   # чому Spotify API зараз недоступний
 
 def _spotify_unavailable_msg() -> str:
     return _spotify_problem or "Spotify API не налаштований."
+
+
+def _no_device(e) -> bool:
+    s = str(e)
+    return "NO_ACTIVE_DEVICE" in s or "No active device" in s
+
+
+def _wake_device(sp):
+    """Немає активного пристрою (застосунок відкритий, але давно нічого не грав, або
+    закритий): робить активним Spotify на цьому ПК, а якщо його нема, запускає.
+    → id пристрою або None. Раніше Лін на це лише казала «відкрий Spotify»."""
+    def pick():
+        devices = sp.devices().get("devices", [])
+        return next((d for d in devices if d.get("type") == "Computer"), None) or (devices[0] if devices else None)
+    try:
+        device = pick()
+        if device is None:
+            os.startfile("spotify:")                 # запустити застосунок
+            for _ in range(20):                      # до 10 с, поки він зʼявиться серед пристроїв
+                time.sleep(0.5)
+                device = pick()
+                if device:
+                    break
+        if device is None:
+            return None
+        sp.transfer_playback(device["id"], force_play=False)
+        time.sleep(0.8)                              # Spotify перемикає не миттєво
+        log.info(f"Spotify: пристрій «{device['name']}» зроблено активним")
+        return device["id"]
+    except Exception as e:
+        log.warning(f"Spotify: не вдалося розбудити пристрій: {e}")
+        return None
+
+
+def with_device(sp, call):
+    """call(); на «немає активного пристрою» будить Spotify на ПК і пробує ще раз."""
+    try:
+        return call()
+    except Exception as e:
+        if not _no_device(e) or not _wake_device(sp):
+            raise
+        return call()
 
 
 def _get_spotipy():
@@ -146,7 +190,7 @@ def _spotify_set_playing(want_playing: bool):
                 log.info(f"Spotify: вже {'грає' if playing else 'на паузі'}, нічого не міняю")
                 return
             if want_playing:
-                sp.start_playback()
+                with_device(sp, sp.start_playback)
             else:
                 sp.pause_playback()
             log.info(f"Spotify API: {'resumed' if want_playing else 'paused'}")
@@ -374,7 +418,7 @@ def _spotify_shuffle(enable: bool) -> None:
         tts.speak(_spotify_unavailable_msg())
         return
     try:
-        sp.shuffle(enable)
+        with_device(sp, lambda: sp.shuffle(enable))
         state_str = "увімкнено" if enable else "вимкнено"
         log.info(f"Spotify shuffle: {state_str}")
         tts.speak(f"Перемішування {state_str}.")
@@ -399,7 +443,7 @@ def _spotify_repeat(mode: str) -> None:
     }
     api_mode = mode_map.get(mode.lower(), "off")
     try:
-        sp.repeat(api_mode)
+        with_device(sp, lambda: sp.repeat(api_mode))
         labels = {"track": "повтор треку", "context": "повтор плейлисту", "off": "повтор вимкнено"}
         log.info(f"Spotify repeat: {api_mode}")
         tts.speak(f"{labels[api_mode]}.")
@@ -453,7 +497,7 @@ def _spotify_play_playlist(name: str) -> None:
                 return
             playlist = pl_items[0]
 
-        sp.start_playback(context_uri=playlist["uri"])
+        with_device(sp, lambda: sp.start_playback(context_uri=playlist["uri"]))
         log.info(f"Spotify play playlist: {playlist['name']}")
         tts.speak(f"Вмикаю плейлист «{playlist['name']}».")
     except Exception as e:
@@ -556,7 +600,7 @@ def _spotify_add_to_queue(query: str) -> None:
             tts.speak(f"Трек «{query}» не знайдено.")
             return
         track = tracks[0]
-        sp.add_to_queue(track["uri"])
+        with_device(sp, lambda: sp.add_to_queue(track["uri"]))
         name = track["name"]
         artist = track["artists"][0]["name"]
         log.info(f"Spotify queue add: {name} / {artist}")
