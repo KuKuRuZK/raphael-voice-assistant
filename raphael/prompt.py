@@ -11,6 +11,7 @@ from raphael import diary
 from raphael import emotion
 from raphael import notes
 from raphael import settings as cfg
+from raphael import trust
 from raphael import vibes
 
 log = logging.getLogger("Лін")
@@ -201,7 +202,7 @@ def build_system_prompt() -> str:
         # Змінне в самому кінці: постійна частина вище однакова в кожному
         # запиті, і провайдери, що кешують початок промпту, її перевикористають.
         # Час inject_time() допише ще далі.
-        + brain_block + memory_block + notes_reminder + vibes.context()
+        + brain_block + memory_block + trust.prompt_line() + notes_reminder + vibes.context()
     ).rstrip()
 
 

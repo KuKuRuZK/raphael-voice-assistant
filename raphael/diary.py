@@ -136,10 +136,10 @@ def summarize_pending(today: date = None) -> int:
         text = summarize(day, rows)
         if not text:
             break                                    # модель промовчала: спробуємо пізніше
-        mem = notes.load_memory()                    # могла змінитись, поки модель думала
-        days = dict(mem.get("days") or {}, **{day: text})
-        mem["days"] = dict(sorted(days.items())[-KEEP_SUMMARIES:])
-        notes.save_memory(mem)
+        def keep(mem, day=day, text=text):
+            days = dict(mem.get("days") or {}, **{day: text})
+            mem["days"] = dict(sorted(days.items())[-KEEP_SUMMARIES:])
+        notes.update_memory(keep)                    # памʼять могла змінитись, поки модель думала
         log.info(f"Щоденник: підсумок за {day}: {text}")
         done += 1
     return done

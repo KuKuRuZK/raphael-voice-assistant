@@ -26,6 +26,7 @@ from raphael import runtime
 from raphael import settings as cfg
 from raphael import stt
 from raphael import sysmon
+from raphael import trust
 from raphael import tts
 from raphael import voice_rules as vr
 
@@ -141,6 +142,7 @@ def ask_lin(user_input: str) -> str:
         return "Хм, загубила думку. Повтори, будь ласка."
     history.append({"role": "assistant", "content": reply})
     diary.add(user_input, reply)
+    trust.on_exchange(user_input)
 
     # Три формати: [ACTION:type:param], [type:param] і голе type:param
     action_type, action_param, _bracketed = llm._find_action(reply)

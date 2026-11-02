@@ -85,3 +85,24 @@ def test_tts_settings_from_config(lin, env, tmp_path):
     env.get("_load_config")()
     assert env.get("TTS_ENGINE") == "http"
     assert env.get("TTS_HTTP_VOICE") == "uk_female"
+
+
+def test_sentence_mood_goes_to_own_voice_server(tts, env):
+    """Настрій речення ([EMO:x]) іде на сервер голосу: там він міняє темп, висоту й гучність."""
+    sent = []
+
+    def urlopen(req, timeout):
+        sent.append(json.loads(req.data))
+        return io.BytesIO(b"RIFFwav")
+
+    env.patch("TTS_ENGINE", "http")
+    env.patch("TTS_HTTP_URL", "http://127.0.0.1:8880/v1/audio/speech")
+    env.patch("TTS_HTTP_MODEL", "")
+    env.patch("TTS_HTTP_VOICE", "")
+    env._saved.append((tts.urllib.request, "urlopen", tts.urllib.request.urlopen))
+    tts.urllib.request.urlopen = urlopen
+    for args in (("Ха-ха, ну ти даєш.", "laugh"), ("Окей.",)):
+        path, _ = tts._tts_audio(*args)
+        os.unlink(path)
+    assert sent[0] == {"input": "Ха-ха, ну ти даєш.", "response_format": "wav", "emotion": "laugh"}
+    assert "emotion" not in sent[1]

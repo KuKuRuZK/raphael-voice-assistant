@@ -4,6 +4,7 @@
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timedelta
 
@@ -179,6 +180,20 @@ def save_memory(data: dict):
     _write_json_atomic(cfg.MEMORY_PATH, data)
 
 
+# memory.json тепер пишуть кілька потоків (підсумки щоденника, довіра, кінець сесії),
+# і «прочитав, змінив, записав» без замка губив би чужі зміни
+_memory_lock = threading.RLock()
+
+
+def update_memory(change) -> dict:
+    """change(mem) міняє памʼять на місці; читання й запис під одним замком."""
+    with _memory_lock:
+        mem = load_memory()
+        change(mem)
+        save_memory(mem)
+        return mem
+
+
 def update_memory_after_session(exchanges: list):
     """Зберігає короткий підсумок сесії через Groq."""
     # Без системного промпту: раніше він (8 тис. символів) ішов у підсумок
@@ -187,7 +202,6 @@ def update_memory_after_session(exchanges: list):
     if len(exchanges) < 3:
         return
     try:
-        mem = load_memory()
         summary_prompt = (
             "Зроби короткий підсумок (1-2 речення) цієї розмови для майбутньої пам'яті. "
             "Вкажи що робив користувач, про що говорили, важливі факти. "
@@ -200,9 +214,11 @@ def update_memory_after_session(exchanges: list):
             max_tokens=300,          # міркувальні моделі з'їдають частину ліміту
         )
         summary = resp.choices[0].message.content.strip()
-        mem["last_session"] = summary
-        mem["session_count"] = mem.get("session_count", 0) + 1
-        save_memory(mem)
+
+        def keep(mem):
+            mem["last_session"] = summary
+            mem["session_count"] = mem.get("session_count", 0) + 1
+        update_memory(keep)                 # читаємо після моделі: поки вона думала, памʼять могла змінитись
         log.info(f"Пам'ять збережена: {summary}")
     except Exception as e:
         log.error(f"Помилка збереження пам'яті: {e}")

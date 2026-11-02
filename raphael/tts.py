@@ -199,13 +199,16 @@ HTTP_TTS_TIMEOUT = 30
 _http_down_until = 0.0
 
 
-def _http_audio(text: str) -> str:
-    """wav від локального TTS-сервера."""
+def _http_audio(text: str, emo: str = None) -> str:
+    """wav від локального TTS-сервера. emo: настрій речення ([EMO:x]); свій сервер
+    Лін (lin_voice_server.py) міняє від нього темп, висоту й гучність, інші ігнорують."""
     body = {"input": text, "response_format": "wav"}
     if cfg.TTS_HTTP_MODEL:
         body["model"] = cfg.TTS_HTTP_MODEL
     if cfg.TTS_HTTP_VOICE:
         body["voice"] = cfg.TTS_HTTP_VOICE
+    if emo:
+        body["emotion"] = emo
     req = urllib.request.Request(cfg.TTS_HTTP_URL, data=json.dumps(body).encode("utf-8"),
                                  headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=HTTP_TTS_TIMEOUT) as resp:
@@ -244,14 +247,14 @@ def start_http_server() -> bool:
     return True
 
 
-def _engine_audio(text: str):
+def _engine_audio(text: str, emo: str = None):
     """Аудіо від обраного TTS_ENGINE, якщо це не edge. None → іти звичним шляхом."""
     global _http_down_until
     if cfg.TTS_ENGINE == "piper" and _piper_ready():
         return _piper_audio(text)
     if cfg.TTS_ENGINE == "http" and cfg.TTS_HTTP_URL and time.monotonic() >= _http_down_until:
         try:
-            return _http_audio(text)
+            return _http_audio(text, emo)
         except Exception as e:
             _http_down_until = time.monotonic() + EDGE_RETRY_AFTER
             log.warning(f"TTS-сервер {cfg.TTS_HTTP_URL} не відповів ({type(e).__name__}: {e}), "
@@ -259,13 +262,13 @@ def _engine_audio(text: str):
     return None
 
 
-def _tts_audio(text: str) -> tuple:
+def _tts_audio(text: str, emo: str = None) -> tuple:
     """
     Аудіо для фрази: від обраного TTS_ENGINE, з кешу, щойно синтезоване
     edge-tts або, без інтернету, офлайн-голосом Piper. → (шлях, чи тимчасовий файл)
     """
     global _edge_down_until
-    own = _engine_audio(text)
+    own = _engine_audio(text, emo)
     if own:
         return own, True
     cached = _tts_cache_path(text)
@@ -387,7 +390,7 @@ def speak_stream(chunks) -> str:
                 if not clean:
                     continue
                 try:
-                    audio = _tts_audio(clean)
+                    audio = _tts_audio(clean, mood[0])
                 except Exception as e:
                     # Найчастіше це немає інтернету: решту речень теж не
                     # синтезуємо, щоб не чекати таймаут на кожному
