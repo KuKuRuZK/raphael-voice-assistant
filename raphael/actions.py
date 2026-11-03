@@ -4,6 +4,7 @@
 import difflib
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -551,7 +552,8 @@ def execute_action(action_str: str):
         # HTTP запит робиться паралельно; _tts_lock гарантує що погода
         # озвучується після того як AI-відповідь договорить
         elif t == "weather":
-            _city = p if p else None
+            # Місто це одне-три слова; речення («Погода? Дивимось.») моделі не місто
+            _city = p if p and len(p.split()) <= 3 and not re.search(r"[?!.]", p) else None
             threading.Thread(
                 target=lambda: tts.speak(web._get_weather(_city)), daemon=True
             ).start()

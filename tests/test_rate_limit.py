@@ -101,3 +101,13 @@ def test_vibe_line_stays_silent_when_its_model_is_limited(llm, env):
     with pytest.raises(llm.LLMUnavailable):
         vibes._line("Влад утретє програв боса.")
     assert calls == ["qwen/x"]                  # ліміт відповідей Владу не чіпаємо
+
+
+def test_vibe_line_outside_game_uses_own_model_then_local(llm, env):
+    from raphael import vibes
+    env.patch("GAME", None)
+    env.patch("BRAIN_LOCAL_MODEL", "lmstudio:local")
+    env.patch("VIBE_MODEL", "qwen/x")
+    calls = _script(env, {"qwen/x": [TimeoutError("нема інтернету")], "lmstudio:local": ["Ну й бас."]})
+    assert vibes._line("Новий трек.") == "Ну й бас."
+    assert calls == ["qwen/x", "lmstudio:local"]

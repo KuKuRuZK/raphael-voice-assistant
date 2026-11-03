@@ -91,10 +91,13 @@ def _line(situation: str) -> str:
     """Коротка репліка від себе під ситуацію (без озвучки)."""
     from raphael import prompt          # prompt сам імпортує vibes
     model, fallback = llm.main_model(), None
-    if cfg.VIBE_MODEL and not llm._is_local(model):
-        # Мозок у хмарі (гра): репліка йде на свою модель і без резерву, щоб не
-        # зʼїсти ліміт за хвилину, потрібний на відповіді Владу. Не вийшло: змовчить
-        model, fallback = cfg.VIBE_MODEL, False
+    if cfg.VIBE_MODEL:
+        # Репліки завжди на свою модель: локальна 20b писала «бас штовхає тебе, немов
+        # клоун на вулиці» (2026-11-03), а qwen живіша. У грі без резерву, щоб не
+        # зʼїсти ліміт за хвилину, потрібний на відповіді Владу; поза грою резерв
+        # локальна, коли нема інтернету. Не вийшло: змовчить
+        model = cfg.VIBE_MODEL
+        fallback = (cfg.BRAIN_LOCAL_MODEL or False) if not runtime.GAME else False
     resp = llm.llm_chat(
         model,
         fallback=fallback,

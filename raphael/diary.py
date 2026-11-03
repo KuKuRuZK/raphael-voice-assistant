@@ -43,6 +43,12 @@ def _path(day: str) -> str:
 def _clean(text: str) -> str:
     """Без тегів настрою й дій: у щоденнику лише сказане."""
     text = llm._ACTION_RE.sub("", emotion.EMO_RE.sub("", text or ""))
+    # і без голої дії на початку («spotify_like:»): після перезапуску вона йшла в
+    # розмову як репліка Лін, і на «дарова» модель відповіла «просто лайкну» (2026-11-03)
+    m = re.match(r"\s*([a-z][a-z_]{2,24})\s*:", text)
+    if m and llm._plausible_action(m.group(1).lower()):
+        text = text[m.end():]
+        text = re.sub(r"^\S*", "", text) if not text.startswith(" ") else text   # параметр, приклеєний до дії
     return re.sub(r"\s+", " ", text).strip()
 
 
@@ -87,9 +93,10 @@ def recent_turns(now: datetime = None) -> list:
                 t = datetime.strptime(f"{day:%Y-%m-%d} {r['t']}", "%Y-%m-%d %H:%M")
             except (KeyError, ValueError):
                 continue
-            if timedelta(0) <= now - t <= timedelta(hours=RESUME_HOURS):
+            lin = _clean(r.get("lin", ""))           # записи, зроблені до того, як _clean прибирав голу дію
+            if lin and timedelta(0) <= now - t <= timedelta(hours=RESUME_HOURS):
                 turns.append([{"role": "user", "content": r["user"]},
-                              {"role": "assistant", "content": r.get("lin", "")}])
+                              {"role": "assistant", "content": lin}])
     return [m for pair in turns[-RESUME_TURNS:] for m in pair]
 
 

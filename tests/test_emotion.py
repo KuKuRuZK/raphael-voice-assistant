@@ -68,6 +68,9 @@ def test_speech_carries_emotion_to_body_and_not_to_voice(env, tmp_path, monkeypa
     # дія в дужках без двокрапки
     ("[gmail_unread]", ("gmail_unread", "")),
     ("[usage_report:]", ("usage_report", "")),
+    # тег настрою між дією і мовою: «Погода? Дивимось.» не місто (лог 2026-11-03, 11:12)
+    ("weather:[EMO:tease] Погода? Дивимось. [ACTION:weather:]", ("weather", "")),
+    ("[EMO:sly] \n\nspotify_play:\n\n[ACTION:spotify_play:]", ("spotify_play", "")),
     # тег тіла поруч зі справжньою дією не перебиває її
     ("[EMO:tease][ACTION:avatar:type] [ACTION:dictate_type:]", ("dictate_type", "")),
     # справжня дія тіла лишається

@@ -267,14 +267,97 @@ def _usage_tokens(obj) -> int:
     return n if isinstance(n, int) else 0
 
 
+# ── gpt-oss у LM Studio: свій шаблон harmony замість чату ─────────────────────
+# Через /v1/chat/completions LM Studio сам розбирає вихід gpt-oss і падає, коли
+# модель пише «<|channel|>final <|constrain|>[EMO:sly] …» без «<|message|>»: тег
+# настрою на початку відповіді вона приймає за формат обмеження. Це 400 «does not
+# match the expected peg-native format» і порожні відповіді, разом ≈1 з 4 запитів
+# 2026-11-03. Через /v1/completions з тим самим шаблоном і своїм розбором: 0 з 30.
+
+def _is_harmony(model: str) -> bool:
+    return model.startswith("lmstudio:") and model.split(":", 1)[1].startswith("openai/gpt-oss")
+
+
+def _text_of(content) -> str:
+    if isinstance(content, list):                    # [{"type": "text", ...}, картинки]
+        return " ".join(p.get("text", "") for p in content if isinstance(p, dict))
+    return content or ""
+
+
+def _harmony_prompt(messages) -> str:
+    out = ["<|start|>system<|message|>You are ChatGPT, a large language model trained by OpenAI.\n"
+           # Без commentary: це канал викликів функцій, а функцій у Лін нема, дії йдуть тегами
+           "Reasoning: low\n\n# Valid channels: analysis, final. "
+           "Channel must be included for every message.<|end|>"]
+    for m in messages:
+        text = _text_of(m.get("content"))
+        if m.get("role") == "system":
+            out.append(f"<|start|>developer<|message|># Instructions\n\n{text}<|end|>")
+        elif m.get("role") == "assistant":
+            out.append(f"<|start|>assistant<|channel|>final<|message|>{text}<|end|>")
+        else:
+            out.append(f"<|start|>user<|message|>{text}<|end|>")
+    return "".join(out) + "<|start|>assistant"
+
+
+def _harmony_final(raw: str) -> str:
+    """Відповідь з каналу final; роздуми (analysis) і службові токени відкидаємо.
+    Без final модель інколи «викликає функцію» каналом commentary:
+    «<|channel|>commentary to=assistant <|constrain|>… <|message|>{"name":"get_time"}»
+    (перевірка 2026-11-03); тоді це дія, і ми робимо з неї тег.
+    Нема ні того, ні того (ліміт зʼїли роздуми) → "", і відповідає хмара."""
+    i = raw.rfind("<|channel|>final")
+    if i < 0:
+        return _harmony_commentary(raw)
+    text = raw[i + len("<|channel|>final"):]
+    if "<|message|>" in text:                        # «<|constrain|>EMO:sly<|message|>текст»
+        text = text.split("<|message|>", 1)[1]
+    text = re.sub(r"<\|[a-z]+\|>", " ", text)
+    return re.sub(r"^\s*(?:json|text)\b", "", text).strip()
+
+
+def _harmony_commentary(raw: str) -> str:
+    i = raw.rfind("<|channel|>commentary")
+    if i < 0 or "<|message|>" not in raw[i:]:
+        return ""
+    text = re.sub(r"<\|[a-z]+\|>", " ", raw[i:].split("<|message|>", 1)[1]).strip()
+    try:
+        call = json.loads(text)
+    except ValueError:
+        return text                                  # звичайний текст не в тому каналі
+    if not isinstance(call, dict) or not call.get("name"):
+        return ""
+    args = call.get("arguments") or call.get("params") or call.get("parameters") or {}
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            args = {"param": args}
+    param = next(iter(args.values()), "") if isinstance(args, dict) and args else ""
+    return f"[ACTION:{call['name']}:{param}]"
+
+
+def _harmony_call(cli, bare: str, messages, **kw):
+    resp = cli.completions.create(
+        model=bare, prompt=_harmony_prompt(messages), stop=["<|return|>", "<|call|>"],
+        max_tokens=kw.get("max_tokens") or 450, temperature=kw.get("temperature", 0.7))
+    raw = (resp.choices[0].text if resp.choices else "") or ""
+    from types import SimpleNamespace
+    msg = SimpleNamespace(content=_harmony_final(raw), tool_calls=None)
+    return SimpleNamespace(choices=[SimpleNamespace(message=msg, finish_reason=resp.choices[0].finish_reason
+                                                    if resp.choices else "stop")],
+                           usage=getattr(resp, "usage", None))
+
+
 def _llm_call(model: str, messages, **kw):
     cli, bare = _llm(model)
     if _is_local(model):
         kw.pop("tools", None)             # локальні моделі функцій часто не вміють
-    # gpt-oss-20b у LM Studio інколи пропускає службовий токен свого формату
-    # («<|channel|>final» без «<|message|>»), і сервер віддає 400 «does not match
-    # the expected peg-native format». Це випадковість: у перевірці 2026-11-03 так
-    # падав кожен пʼятий запит, а після двох повторів лишилось ≈1 з 30.
+    if _is_harmony(model):
+        resp = _harmony_call(cli, bare, messages, **kw)
+        usage.record(model, tokens=_usage_tokens(resp))
+        return resp
+    # Інші моделі LM Studio теж можуть ламати формат так само: два повтори
     for attempt in range(3):
         try:
             resp = cli.chat.completions.create(model=bare, messages=messages,
@@ -339,7 +422,8 @@ def _check_local_reply(resp) -> None:
         raise BadLocalReply(f"російська: {text[:60]!r}")
     # Теги дій: невідомий тип ([ACTION:app:open]), голий тег посеред тексту чи поруч
     # із тегом у дужках (його зачитали б уголос), або дужки без дії («[dance]»)
-    tags = _ACTION_RE.findall(text)
+    # «[ACTION:get_time]» без параметра теж справжня дія (_find_action її розуміє)
+    tags = [(p, "") if t.lower() == "action" and ":" not in p else (t, p) for t, p in _ACTION_RE.findall(text)]
     if any(not _plausible_action(t.lower()) for t, _ in tags):
         raise BadLocalReply(f"невідома дія: {text[:60]!r}")
     rest = _ACTION_RE.sub("", text)
@@ -381,6 +465,13 @@ def llm_stream(model: str, messages, fallback=None, **kw):
     дві різні відповіді підряд. Потік тоді просто обривається винятком.
     """
     def _open(m):
+        if _is_harmony(m):
+            # Потоком через свій шаблон не вийде (final видно лише в кінці),
+            # тож одним шматком: локальна відповідає за 1-3 с
+            text = _llm_call(m, messages, **kw).choices[0].message.content
+            if not text:
+                raise BadLocalReply("порожня відповідь")
+            return text, iter(())
         cli, bare = _llm(m)
         stream = cli.chat.completions.create(
             model=bare, messages=messages, stream=True, **_model_kwargs(bare), **kw)
@@ -484,11 +575,16 @@ def _find_action(reply: str):
     зайве: «dictate_last:[ACTION:avatar:type]», «system_info:[ACTION:system_health]»,
     «note_remind:мама|21:00 [ACTION:note_remind]» (перевірка 2026-11-03, gpt-oss-20b).
     Вигадані теги пропускає й шукає далі."""
-    reply = emotion.EMO_RE.sub("", reply or "").strip()    # «[EMO:happy] note_remind:…»: голий тег після настрою
+    # Тег настрою стає межею, а не зникає: з «weather:[EMO:tease] Погода? Дивимось.»
+    # інакше виходило місто «Погода? Дивимось.» (лог 2026-11-03, 11:12)
+    reply = emotion.EMO_RE.sub("\n", reply or "").strip()  # «[EMO:happy] note_remind:…»: голий тег після настрою
     m = _BARE_ACTION_RE.match(reply)
     if m:
         name = m.group(1).lower()
-        param = re.split(r"\s*\[", m.group(2), maxsplit=1)[0].strip().rstrip(";,")   # без тегів, дописаних слідом
+        # Параметр до першого тегу чи кінця рядка: далі вже звичайна мова
+        # (\s* у _BARE_ACTION_RE ковтає перенос, тому рядок беремо від двокрапки)
+        rest = reply[reply.index(":", m.start(1)) + 1:].lstrip(" \t")
+        param = re.split(r"\s*\[|\n", rest, maxsplit=1)[0].strip().rstrip(";,")
         if (name.startswith(_ACTION_PREFIXES) or name in ("weather", "timer", "hotkey")) and (
                 name != "avatar" or _real_action(name, param)):
             log.info(f"Дія без дужок, приймаю: {name}")

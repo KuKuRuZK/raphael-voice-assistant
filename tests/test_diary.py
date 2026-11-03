@@ -109,3 +109,10 @@ def test_diary_find_is_an_action(lin):
     from raphael import llm
     assert llm._find_action("[EMO:sly] Зараз згадаю. [ACTION:diary_find:що казав про ARK]")[:2] == \
         ("diary_find", "що казав про ARK")
+
+
+def test_bare_action_reply_is_not_resumed_as_talk(diary):
+    diary.add("лайкни трек", "[EMO:tease] spotify_like: [ACTION:spotify_like:]", datetime(2026, 11, 3, 11, 9))
+    diary.add("котра година", "[EMO:happy] 11:11. [ACTION:get_time:]", datetime(2026, 11, 3, 11, 11))
+    assert diary.read_day("2026-11-03")[0]["lin"] == ""
+    assert [m["content"] for m in diary.recent_turns(datetime(2026, 11, 3, 11, 12))] == ["котра година", "11:11."]

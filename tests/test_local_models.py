@@ -80,15 +80,15 @@ def _flaky_client(failures, calls):
 
 @pytest.mark.parametrize("failures,ok", [(1, True), (2, True), (3, False)])
 def test_local_broken_format_is_asked_again(lin, env, failures, ok):
-    """gpt-oss-20b у LM Studio інколи ламає службовий формат (400): двічі питаємо ще раз."""
+    """Модель у LM Studio ламає службовий формат (400): двічі питаємо ще раз (gpt-oss йде своїм шаблоном)."""
     from raphael import llm
     calls = []
     env.patch("_llm", lambda model: (_flaky_client(failures, calls), model.partition(":")[2]))
     if ok:
-        assert llm._llm_call("lmstudio:openai/gpt-oss-20b", []).choices[0].message.content == "Ага."
+        assert llm._llm_call("lmstudio:google/gemma-4", []).choices[0].message.content == "Ага."
     else:
         with pytest.raises(Exception, match="peg-native"):
-            llm._llm_call("lmstudio:openai/gpt-oss-20b", [])
+            llm._llm_call("lmstudio:google/gemma-4", [])
     assert len(calls) == min(failures + 1, 3)
 
 
@@ -108,3 +108,57 @@ def test_search_goes_to_cloud(lin, env, text):
     env.patch("GAME", None)
     env.patch("FAST_MODEL", "")
     assert llm._choose_model(text) == env.get("GROQ_PRIMARY_MODEL")
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("<|channel|>analysis<|message|>Need a short answer.<|end|><|start|>assistant<|channel|>final<|message|>[EMO:sly] Привіт.",
+     "[EMO:sly] Привіт."),
+    # те, на чому падав розбір LM Studio (лог сервера 2026-11-03)
+    ("<|channel|>final <|constrain|>[EMO:sly] [ACTION:window_snap:left]", "[EMO:sly] [ACTION:window_snap:left]"),
+    ("<|channel|>final <|constrain|>EMO:sly<|message|>Залишайся, я вже лайкаю.", "Залишайся, я вже лайкаю."),
+    ("<|channel|>final <|constrain|>json<|message|>[EMO:happy] Ок.", "[EMO:happy] Ок."),
+    ("<|channel|>analysis<|message|>Thinking and thinking and", ""),          # роздуми зʼїли ліміт
+    # «виклик функції» каналом commentary замість відповіді
+    ('<|channel|>analysis<|message|>Use get_time.<|end|><|start|>assistant<|channel|>commentary to=assistant '
+     '<|constrain|>response_type=action code<|message|>{"name":"get_time"}', "[ACTION:get_time:]"),
+    ('<|channel|>commentary to=functions.weather <|constrain|>json<|message|>{"name":"weather","arguments":{"city":"Berlin"}}',
+     "[ACTION:weather:Berlin]"),
+    ("<|channel|>commentary to=assistant<|message|>[EMO:sly] Щось гучно.", "[EMO:sly] Щось гучно."),
+])
+def test_harmony_final(lin, raw, expected):
+    from raphael import llm
+    assert llm._harmony_final(raw) == expected
+
+
+def test_harmony_prompt_roles(lin):
+    from raphael import llm
+    p = llm._harmony_prompt([{"role": "system", "content": "Ти Лін."}, {"role": "user", "content": "привіт"},
+                             {"role": "assistant", "content": "Ага."}, {"role": "user", "content": "котра година"}])
+    assert "<|start|>developer<|message|># Instructions\n\nТи Лін.<|end|>" in p
+    assert "<|start|>assistant<|channel|>final<|message|>Ага.<|end|>" in p
+    assert p.endswith("<|start|>user<|message|>котра година<|end|><|start|>assistant")
+
+
+def test_local_gpt_oss_goes_through_completions(lin, env):
+    import types
+    from raphael import llm
+    sent = []
+
+    class Client:
+        class completions:
+            @staticmethod
+            def create(model, prompt, **kw):
+                sent.append((model, kw))
+                return types.SimpleNamespace(usage=None, choices=[types.SimpleNamespace(
+                    finish_reason="stop", text="<|channel|>final<|message|>[EMO:happy] Привіт, Владе!")])
+    env.patch("_llm", lambda model: (Client, model.partition(":")[2]))
+    resp = llm.llm_chat("lmstudio:openai/gpt-oss-20b", [{"role": "user", "content": "дарова"}], fallback=False)
+    assert resp.choices[0].message.content == "[EMO:happy] Привіт, Владе!"
+    assert sent[0][0] == "openai/gpt-oss-20b" and "<|return|>" in sent[0][1]["stop"]
+    assert "".join(llm.llm_stream("lmstudio:openai/gpt-oss-20b", [{"role": "user", "content": "x"}],
+                                  fallback=False)) == "[EMO:happy] Привіт, Владе!"
+
+
+def test_action_tag_without_param_is_a_good_local_reply(lin):
+    from raphael import llm
+    llm._check_local_reply(fake_reply("[EMO:happy] [ACTION:get_time]"))           # не BadLocalReply
