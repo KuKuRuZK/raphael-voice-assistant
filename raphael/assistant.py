@@ -137,6 +137,13 @@ def ask_lin(user_input: str) -> str:
     if tool_tag:
         reply = f"{reply} {tool_tag}".strip()
     log.info(f"Відповідь: '{reply}'")
+    # Звичайну розмову веде локальна модель (команди йдуть у хмару): теги тіла, яких
+    # не просили, і вигадані теги не виконуємо і в історію не кладемо
+    if llm._is_local(getattr(response, "lin_model", primary)) and not llm._is_command(user_input):
+        quiet = llm.drop_unasked_tags(reply)
+        if quiet != reply:
+            log.info(f"Прибрала теги, про які не просили: '{quiet}'")
+            reply = quiet
     if not reply:
         history.pop()
         return "Хм, загубила думку. Повтори, будь ласка."

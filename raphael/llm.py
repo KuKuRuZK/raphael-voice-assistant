@@ -393,6 +393,10 @@ def llm_chat(model: str, messages, fallback=None, **kw):
             resp = _patient(m, lambda m: _llm_call(m, messages, **kw))
             if _is_local(m) and m is not candidates[-1]:
                 _check_local_reply(resp)
+            try:
+                resp.lin_model = m                   # хто відповів насправді (assistant чистить теги локальної)
+            except Exception:
+                pass
             return resp
         except Exception as e:
             errors.append((m, e))
@@ -408,6 +412,48 @@ class BadLocalReply(Exception):
     """Локальна модель відповіла, але так, що краще спитати хмару."""
 
 
+# Дії, які локальна модель може додати сама до звичайної розмови: лише ті, що щось
+# читають. Команди (увімкни, відкрий, потанцюй…) і так ідуть у хмару (_is_command), тож
+# інша справжня дія від локальної означає, що команду не впізнали: тоді питаємо хмару.
+# Теги тіла й вигадані теги просто прибираємо: Gemma 26B чіпляла тег тіла майже до
+# кожної відповіді, а на «поясни, що таке чорна діра» ще й web_search (2026-11-03).
+_LOCAL_TALK_ACTIONS = (
+    "get_time", "weather", "calendar_today", "calendar_tomorrow", "calendar_week",
+    "gmail_unread", "gmail_latest", "slack_unread", "spotify_current", "system_info",
+    "note_list", "diary_find", "usage_report",
+)
+
+
+def _tag_name(m) -> str:
+    name, param = m.group(1).lower(), m.group(2)
+    return param.lower() if name == "action" and ":" not in param else name
+
+
+def drop_unasked_tags(reply: str) -> str:
+    """Прибрати теги тіла, вигадані теги ([ACTION:peek], [dance]) і тег, обірваний лімітом."""
+    def keep(m):
+        name = _tag_name(m)
+        return " " if name == "avatar" or not _plausible_action(name) else m.group(0)
+    out = _ACTION_RE.sub(keep, reply or "")
+    out = _BRACKET_NAME_RE.sub(lambda m: m.group(0) if _plausible_action(m.group(1).lower()) else " ", out)
+    out = re.sub(r"\[[^\]\[]*$", "", out)
+    return re.sub(r"[ 	]{2,}", " ", out).strip()
+
+
+def _unasked_action(text: str) -> str:
+    """Справжня дія, яку локальна не мала б пропонувати на розмову, або ""."""
+    for m in _ACTION_RE.finditer(text):
+        if _tag_name(m) not in _LOCAL_TALK_ACTIONS:
+            return _tag_name(m)
+    for m in _BRACKET_NAME_RE.finditer(text):
+        if m.group(1).lower() not in _LOCAL_TALK_ACTIONS:
+            return m.group(1).lower()
+    m = _BARE_ACTION_RE.match(text)
+    if m and _plausible_action(m.group(1).lower()) and m.group(1).lower() not in _LOCAL_TALK_ACTIONS:
+        return m.group(1).lower()
+    return ""
+
+
 def _check_local_reply(resp) -> None:
     """Невелика локальна модель (gpt-oss-20b) інколи: віддає порожньо (роздуми
     з'їли ліміт) або переходить на російську. Тоді відповідає наступна (хмара)."""
@@ -416,8 +462,14 @@ def _check_local_reply(resp) -> None:
     if getattr(msg, "tool_calls", None):
         return
     text = emotion.EMO_RE.sub("", getattr(msg, "content", None) or "").strip()   # тег настрою це не текст і не дія
+    # Теги тіла й вигадані assistant однаково прибере (drop_unasked_tags): через них
+    # відповідь не бракуємо, інакше Gemma з «[ACTION:avatar:stretch]» щоразу йшла б у хмару
+    text = drop_unasked_tags(text)
     if not text:
         raise BadLocalReply("порожня відповідь")
+    unasked = _unasked_action(text)
+    if unasked:
+        raise BadLocalReply(f"дія без прохання ({unasked}): {text[:60]!r}")
     if _RUSSIAN.search(text):
         raise BadLocalReply(f"російська: {text[:60]!r}")
     # Теги дій: невідомий тип ([ACTION:app:open]), голий тег посеред тексту чи поруч
@@ -706,6 +758,32 @@ def local_unload() -> bool:
     return ok
 
 
+def _lms_load_lean(name: str) -> bool:
+    """Завантажити модель у LM Studio без копії ваг в оперативці.
+
+    За замовчуванням LM Studio тримає ваги ще й у RAM (keepModelInMemory, mmap), навіть
+    коли модель на відеокарті: gpt-oss-20b займала 12-14 ГБ оперативки, і з голосом та
+    іграми памʼять доходила до 98 %. Без цього та сама модель забирає ≈4 ГБ (заміри
+    2026-11-03: зайнято 25 → 15 ГБ), а Gemma 26B вміщається з 18 ГБ. Ці налаштування
+    є лише в SDK (pip lmstudio), `lms load` їх не має. Нема SDK → False, і вантажить CLI."""
+    try:
+        import lmstudio
+        from lmstudio import LlmLoadModelConfig
+    except ImportError:
+        return False
+    try:
+        with lmstudio.Client() as client:
+            # ttl=None: інакше SDK вивантажує модель за годину простою, а наступний
+            # запит LM Studio завантажує сам, уже з копією в оперативці
+            client.llm.load_new_instance(name, ttl=None, config=LlmLoadModelConfig(
+                gpu={"ratio": 1.0}, context_length=cfg.BRAIN_LOCAL_CONTEXT,
+                keep_model_in_memory=False, try_mmap=False))
+        return True
+    except Exception as e:
+        log.warning(f"Мозок: економне завантаження не вдалось ({e}), вантажу як звичайно")
+        return False
+
+
 def local_preload() -> bool:
     """Завантажити локальну модель заздалегідь, щоб перша відповідь не чекала."""
     m = cfg.BRAIN_LOCAL_MODEL
@@ -721,8 +799,8 @@ def local_preload() -> bool:
         if name in ps:
             return True                              # уже в памʼяті: друга копія не потрібна
         # Один слот: Лін питає по одному, а кожен зайвий слот тримає свій кеш контексту (≈0,3 ГБ)
-        ok = _lms("server", "start", timeout=60) and _lms(
-            "load", name, "-c", str(cfg.BRAIN_LOCAL_CONTEXT), "--gpu", "max", "--parallel", "1", "-y", timeout=300)
+        ok = _lms("server", "start", timeout=60) and (_lms_load_lean(name) or _lms(
+            "load", name, "-c", str(cfg.BRAIN_LOCAL_CONTEXT), "--gpu", "max", "--parallel", "1", "-y", timeout=300))
     elif m.startswith("local:"):
         ok = _ollama({"model": m.split(":", 1)[1], "keep_alive": "30m"})
     else:

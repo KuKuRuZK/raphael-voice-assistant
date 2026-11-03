@@ -121,7 +121,11 @@ def _reply(text):
                                  "note_remind:подзвонити мамі|10; [ACTION:brain_add:подзвонити мамі]",
                                  "open_app:Chrome [ACTION:app:open]",
                                  "[dance] [ACTION:avatar:dance]",
-                                 "Окей, ставлю note_remind:мама|10"])
+                                 "Окей, ставлю note_remind:мама|10",
+                                 # Локальна веде лише розмову (команди йдуть у хмару): справжня дія
+                                 # від неї означає, що команду не впізнали, хай вирішує хмара
+                                 "Відкриваю Chrome [ACTION:open_app:chrome]", "note_remind:подзвонити мамі|10",
+                                 "Та це космічна діра, нахрін. [web_search:що таке чорна діра]"])
 def test_bad_local_reply_goes_to_cloud(brain, env, monkeypatch, bad):
     asked = []
 
@@ -134,9 +138,12 @@ def test_bad_local_reply_goes_to_cloud(brain, env, monkeypatch, bad):
     assert asked == [LOCAL, env.get("GROQ_PRIMARY_MODEL")]
 
 
-@pytest.mark.parametrize("good", ["391, ну.", "Відкриваю Chrome [ACTION:open_app:chrome]",
-                                  "note_remind:подзвонити мамі|10", "Танцюю! [ACTION:avatar:dance]",
-                                  "О 9:30 у тебе дзвінок, не забудь."])
+@pytest.mark.parametrize("good", ["391, ну.", "Танцюю! [ACTION:avatar:dance]",
+                                  "О 9:30 у тебе дзвінок, не забудь.", "Зараз гляну. [ACTION:calendar_tomorrow:]",
+                                  # теги тіла й вигадані Gemma дописує до розмови: їх прибере assistant
+                                  "[EMO:smug] Та норм усе. [ACTION:avatar:stretch]",
+                                  "[EMO:happy] Доброго, соня! [ACTION:stretch:потягнутись]",
+                                  "[EMO:sly] Та що завгодно, аби не нудне. [ACTION:search_web:що подивит"])
 def test_good_local_reply_stays_local(brain, monkeypatch, good):
     monkeypatch.setattr(brain, "_llm_call", lambda m, messages, **kw: _reply(good))
     assert brain.llm_chat(LOCAL, [{"role": "user", "content": "щось"}]).choices[0].message.content == good
@@ -152,3 +159,24 @@ def test_cloud_silent_local_is_last_hope(brain, env):
     assert brain._candidates(cloud[0], cloud[1]) == [*cloud, LOCAL]
     env.patch("GAME", "ARK")                                    # у грі локальна вивантажена: її не питати
     assert LOCAL not in brain._candidates(cloud[0], cloud[1])
+
+
+
+@pytest.mark.parametrize("reply,expected", [
+    ("[EMO:smug] Та норм усе. [ACTION:avatar:stretch]", "[EMO:smug] Та норм усе."),
+    ("[EMO:happy] Доброго, соня! [ACTION:stretch:потягнутись]", "[EMO:happy] Доброго, соня!"),
+    ("Не дуже. [ACTION:peek]", "Не дуже."),
+    ("Ну шо [ACTION:search_web:що подивит", "Ну шо"),
+    ("О 9:30 дзвінок. [ACTION:calendar_today:]", "О 9:30 дзвінок. [ACTION:calendar_today:]"),
+])
+def test_drop_unasked_tags(brain, reply, expected):
+    assert brain.drop_unasked_tags(reply) == expected
+
+
+def test_local_talk_reply_is_spoken_without_body_tag(brain, env, monkeypatch):
+    from conftest import fake_reply
+    from raphael import assistant
+    monkeypatch.setattr(brain, "_llm_call", lambda m, messages, **kw: fake_reply("[EMO:smug] Та норм усе. [ACTION:avatar:stretch]"))
+    env.patch("AVATAR_ENABLED", False)
+    assistant.ask_lin("як справи?")
+    assert assistant.history[-1]["content"] == "[EMO:smug] Та норм усе."
