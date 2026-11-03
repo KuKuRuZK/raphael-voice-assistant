@@ -31,7 +31,7 @@ def normalize(text: str) -> str:
 WAKE_MAX_POSITION = 3   # ім'я має бути серед перших трьох слів фрази
 
 
-def find_wake(text: str, wake_words) -> tuple | None:
+def find_wake(text: str, wake_words, first_only=()) -> tuple | None:
     """
     Шукає звертання до асистента. → (ім'я, команда без імені) або None.
 
@@ -39,6 +39,9 @@ def find_wake(text: str, wake_words) -> tuple | None:
     музику», «слухай Рафа, ...») або останнє слово («увімкни музику, Рафа»).
     Раніше ім'я шукалось як підрядок будь-де, і будили його «хвилин», «лінія»,
     «Берлін», «фотографа», у тому числі власні фрази («Таймер 5 хвилин»).
+
+    first_only: слова, що рахуються іменем лише першим словом фрази і лише з
+    командою після них («блин, увімкни музику», але не «ну блин» і не голе «блін»).
     """
     text = text or ""
     for m in _words_re(frozenset(wake_words)).finditer(text):
@@ -48,6 +51,12 @@ def find_wake(text: str, wake_words) -> tuple | None:
             command = f"{text[:m.start()]} {text[m.end():]}"
             command = re.sub(r"\s*,\s*", ", ", re.sub(r"\s+", " ", command))
             return m.group(0).lower(), command.strip(" ,.!?;:-")
+    if first_only:
+        m = re.match(rf"\W*({_W}+)", text)
+        if m and m.group(1).lower() in first_only:
+            command = re.sub(r"\s+", " ", text[m.end():]).strip(" ,.!?;:-")
+            if re.search(rf"{_W}", command):
+                return m.group(1).lower(), command
     return None
 
 

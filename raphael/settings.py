@@ -67,8 +67,13 @@ VIBE_MODEL = "qwen/qwen3.8-27b"
 # «лін» у його словнику нема). Колишнє імʼя (Рафаель) прибрано 2026-11-02.
 # «Ліно» (кличний відмінок) Whisper пише саме так, а його тут не було: «Ліно, що
 # в пошті?» не будило Лін (перевірка 2026-11-03). «лінн» буває, коли тягнуть «н».
-WAKE_WORDS = {"лін", "лин", "lin", "linz", "lynn", "ліна", "ліно", "лінн", "лінь",
+# «олін»: «О, Лін» одним словом (лог 2026-11-03, 11:04).
+WAKE_WORDS = {"лін", "лин", "lin", "linz", "lynn", "ліна", "ліно", "лінн", "лінь", "олін",
               "lean", "lien", "lane", "line", "лінc", "lens"}
+# Імʼя лише першим словом і з командою після нього. Whisper чує Владове «Лін» як
+# «блин» («блин, будь ласка, включи музику», двічі 2026-11-03). Деінде у фразі це
+# просто лайка, тому не будить; так вирішив Влад, знаючи, що інколи спрацює зайве.
+WAKE_WORDS_FIRST = {"блин", "блін"}
 VOICE       = "uk-UA-PolinaNeural"
 VOICE_RATE  = "+25%"   # динамічно оновлюється через _adjust_voice_rate()
 VOICE_PITCH = "+3Hz"   # трохи вищий тон — менш роботоподібний
@@ -350,7 +355,7 @@ def _load_config():
         "SYS_MONITOR_ENABLED", "SYS_MONITOR_INTERVAL", "MONITOR_INTERVAL",
         "VISION_MODEL", "VISION_FALLBACK_MODEL", "CALENDAR_TZ", "CALENDAR_REMIND_MINUTES",
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
-        "FAST_MODEL", "WAKE_ENGINE", "BRAIN_VAULT", "DIARY_DIR",
+        "FAST_MODEL", "WAKE_ENGINE", "WAKE_WORDS_FIRST", "BRAIN_VAULT", "DIARY_DIR",
         "OFFLINE_MODEL", "PIPER_EXE", "PIPER_MODEL", "TOOL_CALLING",
         "PERSONA_FILE", "TTS_ENGINE", "TTS_HTTP_URL", "TTS_HTTP_MODEL", "TTS_HTTP_VOICE", "TTS_HTTP_SERVER",
         "VIBE_ENABLED", "VIBE_INTERVAL", "VIBE_MAX_PER_HOUR", "VIBE_GAME_EVERY_MIN",

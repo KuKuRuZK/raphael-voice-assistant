@@ -58,3 +58,24 @@ def test_weather_says_honestly_when_both_fail(env):
     env.patch("_weather_wttr", down)
     env.patch("_weather_open_meteo", down)
     assert "обидва" in web._get_weather("Vilnius")
+
+
+@pytest.mark.parametrize("text,expected", [
+    # так Whisper чує Владове «Лін» (лог 2026-11-03)
+    ("блин, будь ласка, включи музику", ("блин", "будь ласка, включи музику")),
+    ("Блін, що там можна сказати про музику?", ("блін", "що там можна сказати про музику")),
+    ("олін, яка зараз година?", ("олін", "яка зараз година")),
+    # деінде у фразі це просто лайка
+    ("ну блин, знову програв", None),
+    ("знову програв, блін", None),
+    ("блін!", None),
+    ("блинчики з медом", None),
+])
+def test_blin_wakes_only_as_first_word(lin, env, text, expected):
+    from raphael import voice_rules as vr
+    assert vr.find_wake(text, env.get("WAKE_WORDS"), env.get("WAKE_WORDS_FIRST")) == expected
+
+
+def test_real_name_still_wins_over_blin(lin, env):
+    from raphael import voice_rules as vr
+    assert vr.find_wake("блін, лін, постав паузу", env.get("WAKE_WORDS"), env.get("WAKE_WORDS_FIRST"))[0] == "лін"

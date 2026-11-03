@@ -316,7 +316,7 @@ def check_mode_change(text: str) -> bool:
 
 def _without_name(text: str) -> str:
     """Команда після клавіші активації: імʼя, якщо його все одно сказали, прибираємо."""
-    wake = vr.find_wake(text, cfg.WAKE_WORDS)
+    wake = vr.find_wake(text, cfg.WAKE_WORDS, cfg.WAKE_WORDS_FIRST)
     return (wake[1] if wake else "") or text
 
 
@@ -566,7 +566,7 @@ def assistant_loop():
                     continue
                 # Імʼя цілим словом на початку фрази чи в кінці. Раніше шукалось
                 # підрядком будь-де, і «хвилин», «лінія», «Берлін» будили Лін.
-                wake = vr.find_wake(text, cfg.WAKE_WORDS)
+                wake = vr.find_wake(text, cfg.WAKE_WORDS, cfg.WAKE_WORDS_FIRST)
                 if not wake:
                     # Самі фрази в лог не пишемо (тут усе, що кажуть поруч), лише перше
                     # слово: видно, на що Whisper перекручує імʼя («блин», «время»)
