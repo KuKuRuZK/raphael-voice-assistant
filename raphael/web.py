@@ -61,45 +61,89 @@ def _silent_web_search(query: str):
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _get_json(url: str) -> dict:
+    import urllib.request
+    req = urllib.request.Request(url, headers={"User-Agent": "Lin/1.0"})
+    with urllib.request.urlopen(req, timeout=8) as r:
+        return json.loads(r.read().decode())
+
+
+def _weather_wttr(city: str) -> str:
+    """wttr.in: без ключа, з українським описом."""
+    import urllib.parse
+    data = _get_json(f"https://wttr.in/{urllib.parse.quote(city)}?format=j1&lang=uk")
+
+    cur = data["current_condition"][0]
+    temp     = cur["temp_C"]
+    feels    = cur["FeelsLikeC"]
+    humidity = cur["humidity"]
+    wind     = cur["windspeedKmph"]
+
+    # Опис — спробуємо Ukrainian, інакше English
+    lang_list = cur.get("lang_uk") or cur.get("weatherDesc", [])
+    desc = lang_list[0]["value"] if lang_list else "невідомо"
+
+    # Завтра
+    tomorrow  = data["weather"][1]
+    t_max     = tomorrow["maxtempC"]
+    t_min     = tomorrow["mintempC"]
+    hourly    = tomorrow.get("hourly", [])
+    rain_chance = max((int(h.get("chanceofrain", 0)) for h in hourly), default=0)
+    return _weather_text(desc, temp, feels, humidity, wind, t_min, t_max, rain_chance)
+
+
+# Коди погоди WMO (Open-Meteo) → опис
+_WMO = {0: "Ясно", 1: "Переважно ясно", 2: "Мінлива хмарність", 3: "Хмарно", 45: "Туман", 48: "Туман з інеєм",
+        51: "Мряка", 53: "Мряка", 55: "Сильна мряка", 56: "Крижана мряка", 57: "Крижана мряка",
+        61: "Невеликий дощ", 63: "Дощ", 65: "Сильний дощ", 66: "Крижаний дощ", 67: "Крижаний дощ",
+        71: "Невеликий сніг", 73: "Сніг", 75: "Сильний сніг", 77: "Снігова крупа",
+        80: "Злива", 81: "Злива", 82: "Сильна злива", 85: "Снігопад", 86: "Сильний снігопад",
+        95: "Гроза", 96: "Гроза з градом", 99: "Гроза з градом"}
+
+
+def _weather_open_meteo(city: str) -> str:
+    """Open-Meteo: теж без ключа. Резерв, коли wttr.in лежить: 2026-11-03 його
+    сервер відкидав зʼєднання (WinError 10061), а інтернет працював."""
+    import urllib.parse
+    found = _get_json("https://geocoding-api.open-meteo.com/v1/search?count=1&language=uk&name="
+                      + urllib.parse.quote(city)).get("results") or []
+    if not found:
+        raise ValueError(f"місто «{city}» не знайдено")
+    lat, lon = found[0]["latitude"], found[0]["longitude"]
+    data = _get_json(
+        f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&timezone=auto&forecast_days=2"
+        "&current=temperature_2m,apparent_temperature,relative_humidity_2m,wind_speed_10m,weather_code"
+        "&daily=temperature_2m_max,temperature_2m_min,precipitation_probability_max")
+    cur, day = data["current"], data["daily"]
+    return _weather_text(_WMO.get(cur.get("weather_code"), "Погода"),
+                         round(cur["temperature_2m"]), round(cur["apparent_temperature"]),
+                         round(cur["relative_humidity_2m"]), round(cur["wind_speed_10m"]),
+                         round(day["temperature_2m_min"][1]), round(day["temperature_2m_max"][1]),
+                         int(day.get("precipitation_probability_max", [0, 0])[1] or 0))
+
+
+def _weather_text(desc, temp, feels, humidity, wind, t_min, t_max, rain_chance) -> str:
+    rain_note = f" Завтра ймовірність дощу {rain_chance}%." if rain_chance >= 40 else ""
+    return (
+        f"{desc}, {temp}°, відчувається як {feels}°. "
+        f"Вологість {humidity}%, вітер {wind} км/г. "
+        f"Завтра від {t_min} до {t_max}°.{rain_note}"
+    )
+
+
 def _get_weather(city: str = None) -> str:
-    """Отримує погоду через wttr.in (без API ключа)."""
+    """Погода: wttr.in, а якщо він не відповідає, Open-Meteo."""
     city = city or cfg.WEATHER_CITY
-    try:
-        import urllib.request, urllib.parse
-        url = f"https://wttr.in/{urllib.parse.quote(city)}?format=j1&lang=uk"
-        req = urllib.request.Request(url, headers={"User-Agent": "Lin/1.0"})
-        with urllib.request.urlopen(req, timeout=8) as r:
-            data = json.loads(r.read().decode())
-
-        cur = data["current_condition"][0]
-        temp     = cur["temp_C"]
-        feels    = cur["FeelsLikeC"]
-        humidity = cur["humidity"]
-        wind     = cur["windspeedKmph"]
-
-        # Опис — спробуємо Ukrainian, інакше English
-        lang_list = cur.get("lang_uk") or cur.get("weatherDesc", [])
-        desc = lang_list[0]["value"] if lang_list else "невідомо"
-
-        # Завтра
-        tomorrow  = data["weather"][1]
-        t_max     = tomorrow["maxtempC"]
-        t_min     = tomorrow["mintempC"]
-        hourly    = tomorrow.get("hourly", [])
-        rain_chance = max((int(h.get("chanceofrain", 0)) for h in hourly), default=0)
-
-        rain_note = f" Завтра ймовірність дощу {rain_chance}%." if rain_chance >= 40 else ""
-        result = (
-            f"{desc}, {temp}°, відчувається як {feels}°. "
-            f"Вологість {humidity}%, вітер {wind} км/г. "
-            f"Завтра від {t_min} до {t_max}°.{rain_note}"
-        )
-        log.info(f"Weather: {result}")
-        return result
-
-    except Exception as e:
-        log.error(f"Weather error: {e}")
-        return "Не вдалося отримати погоду. Перевір інтернет."
+    errors = []
+    for source in (_weather_wttr, _weather_open_meteo):
+        try:
+            result = source(city)
+            log.info(f"Weather ({source.__name__}): {result}")
+            return result
+        except Exception as e:
+            errors.append(f"{source.__name__}: {e}")
+    log.error(f"Weather error: {'; '.join(errors)}")
+    return "Не вдалося отримати погоду: обидва сервіси погоди не відповіли."
 
 
 # ============================================================

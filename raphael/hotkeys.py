@@ -18,6 +18,37 @@ except Exception:
 
 
 _ptt_event = threading.Event()     # ставиться коли натиснуто клавішу активації
+_ptt_at = 0.0                      # коли натиснули востаннє (monotonic)
+ACTIVATION_TTL = 12.0              # натискання, на яке ніхто не відповів за стільки секунд, забуваємо
+
+
+def beep() -> None:
+    """Короткий сигнал «слухаю»."""
+    try:
+        import winsound
+        winsound.Beep(660, 80)
+    except Exception:
+        pass
+
+
+def activate() -> None:
+    """Клавіша активації (тап правим Ctrl або PTT_HOTKEY): наступна фраза команда без імені.
+    Раніше це працювало лише в режимі кнопки: у звичайному режимі подію ніхто не
+    чекав, у лог писалось «слухаю команду», а Лін мовчала (лог 2026-11-03, 10:57)."""
+    global _ptt_at
+    _ptt_at = time.monotonic()
+    _ptt_event.set()
+    if not cfg.PUSH_TO_TALK:
+        # У звичайному режимі мікрофон уже слухає фоном, тож сигнал даємо одразу
+        threading.Thread(target=beep, daemon=True).start()
+
+
+def take_activation() -> bool:
+    """Чи натиснули клавішу активації нещодавно; відповідь забирає натискання."""
+    if not _ptt_event.is_set():
+        return False
+    _ptt_event.clear()
+    return time.monotonic() - _ptt_at <= ACTIVATION_TTL
 
 
 def _toggle_ptt(on: bool = None) -> None:
@@ -71,7 +102,7 @@ def _tap_watcher(e) -> None:
                         dictation._dictate_to_brain()
                     else:
                         log.info(f"Тап по {cfg.TAP_TOGGLE_KEY}: активація, слухаю команду")
-                        _ptt_event.set()
+                        activate()
         elif e.event_type == "down" and _tap_pressed:
             _tap_combo = True                   # використали як модифікатор
     except Exception as ex:
@@ -84,7 +115,7 @@ def _setup_hotkeys() -> None:
         log.warning("keyboard не доступний — гарячі клавіші вимкнені")
         return
     try:
-        _keyboard.add_hotkey(cfg.PTT_HOTKEY, lambda: _ptt_event.set())
+        _keyboard.add_hotkey(cfg.PTT_HOTKEY, activate)
         _keyboard.add_hotkey(cfg.PTT_TOGGLE_HOTKEY, lambda: _toggle_ptt())
         log.info(f"Гарячі клавіші: {cfg.PTT_HOTKEY} (активація), {cfg.PTT_TOGGLE_HOTKEY} (режим)")
     except Exception as e:

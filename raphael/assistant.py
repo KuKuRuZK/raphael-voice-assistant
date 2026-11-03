@@ -314,6 +314,12 @@ def check_mode_change(text: str) -> bool:
     return False
 
 
+def _without_name(text: str) -> str:
+    """Команда після клавіші активації: імʼя, якщо його все одно сказали, прибираємо."""
+    wake = vr.find_wake(text, cfg.WAKE_WORDS)
+    return (wake[1] if wake else "") or text
+
+
 def process_command(command: str):
     """Обробляє команду і відповідає."""
     log.info(f"Команда: '{command}'")
@@ -493,14 +499,17 @@ def assistant_loop():
                     if not hotkeys._ptt_event.wait(timeout=1.0):
                         continue          # клавішу не натиснули — чекаємо далі
                     hotkeys._ptt_event.clear()
-                    try:
-                        import winsound
-                        winsound.Beep(660, 80)   # короткий сигнал «слухаю»
-                    except Exception:
-                        pass
-                    command = stt.listen(timeout=8)   # одна команда без wake word
+                    # одна команда без імені; сигнал, коли мікрофон уже відкритий
+                    command = stt.listen(timeout=8, on_open=hotkeys.beep)
                     if command and not check_mode_change(command):
                         process_command(command)
+                    continue
+
+                # ── Клавіша активації в звичайному режимі: команда без імені ──
+                if MODE == "normal" and hotkeys.take_activation():
+                    command = stt.listen(timeout=8)   # сигнал уже дав hotkeys.activate
+                    if command and not check_mode_change(command):
+                        process_command(_without_name(command))
                     continue
 
                 # У normal-режимі це фонове чекання імені: вікно не показує
@@ -549,10 +558,20 @@ def assistant_loop():
                     continue
 
                 # ── NORMAL MODE: чекаємо wake word ──
+                # Клавішу активації натиснули, поки фонове слухання вже писало
+                # фразу: це команда, імʼя не потрібне
+                if hotkeys.take_activation():
+                    if not check_mode_change(text):
+                        process_command(_without_name(text))
+                    continue
                 # Імʼя цілим словом на початку фрази чи в кінці. Раніше шукалось
                 # підрядком будь-де, і «хвилин», «лінія», «Берлін» будили Лін.
                 wake = vr.find_wake(text, cfg.WAKE_WORDS)
                 if not wake:
+                    # Самі фрази в лог не пишемо (тут усе, що кажуть поруч), лише перше
+                    # слово: видно, на що Whisper перекручує імʼя («блин», «время»)
+                    first = (re.findall(r"[\wʼ'’-]+", text) or [""])[0]
+                    log.info(f"Почула фразу без імені (перше слово «{first}»)")
                     continue
                 command = wake[1]
                 if runtime.LIN_UI:

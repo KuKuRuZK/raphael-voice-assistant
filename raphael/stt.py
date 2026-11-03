@@ -229,7 +229,7 @@ def _transcribe(audio) -> str:
             or _transcribe_vosk(audio))
 
 
-def listen(timeout=30, phrase_limit=20, passive=False) -> str:
+def listen(timeout=30, phrase_limit=20, passive=False, on_open=None) -> str:
     """
     Слухає одну фразу і повертає текст ("" якщо тиша чи не розпізнано).
 
@@ -241,6 +241,10 @@ def listen(timeout=30, phrase_limit=20, passive=False) -> str:
     passive=True: фонове слухання в normal-режимі, коли чекаємо імʼя. Стан
     вікна не змінюємо: «Слухаю» світиться лише тоді, коли Лін справді
     чекає команду, і на екран не виводиться все, що сказали поруч.
+
+    on_open(): викликається, коли мікрофон уже відкритий (сигнал «слухаю»). Якщо
+    пищати раніше, мікрофон відкривався вже після сигналу, і перше слово команди
+    губилось: «Лін, будь ласка» ставало «время, подлазко» (лог 2026-11-03).
     """
     global _mic_calibrated, _listen_failures
     show = bool(runtime.LIN_UI) and not passive
@@ -259,6 +263,9 @@ def listen(timeout=30, phrase_limit=20, passive=False) -> str:
                 if _listen_failures:
                     log.info(f"Мікрофон знову працює (після {_listen_failures} помилок поспіль)")
                     _listen_failures = 0
+                if on_open:
+                    on_open()
+                    on_open = None                # повтор після озвучки вже без сигналу
                 try:
                     audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_limit)
                 except sr.WaitTimeoutError:
