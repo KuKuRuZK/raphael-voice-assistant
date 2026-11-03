@@ -276,6 +276,10 @@ def execute_action(action_str: str):
             # p = "track" | "context" | "off" | "трек" | "плейлист" тощо
             music._spotify_repeat(p or "off")
 
+        elif t == "spotify_restart":
+            # p = "плейлист" (типово) | "трек"
+            music._spotify_restart(p)
+
         elif t == "spotify_playlists":
             threading.Thread(target=music._spotify_playlists, daemon=True).start()
 

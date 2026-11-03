@@ -452,6 +452,35 @@ def _spotify_repeat(mode: str) -> None:
         tts.speak("Не вдалося змінити режим повтору.")
 
 
+def _spotify_restart(what: str = "") -> None:
+    """Почати спочатку: плейлист чи альбом, що грає (типово), або сам трек.
+    Раніше такої дії не було: «почни цей плейлист спочатку» ставало spotify_play,
+    а воно на музику, що вже грає, нічого не робить (лог 2026-11-03, 11:52)."""
+    sp = _get_spotipy()
+    if not sp:
+        tts.speak(_spotify_unavailable_msg())
+        return
+    track_only = (what or "").strip().lower() in ("трек", "track", "пісня", "пісню")
+    try:
+        state = sp.current_playback() or {}
+        context = (state.get("context") or {}).get("uri")
+        if track_only or not context:
+            with_device(sp, lambda: sp.seek_track(0))
+            log.info("Spotify: трек спочатку")
+            tts.speak("Трек спочатку." if track_only else "Тут нема плейлиста, тож трек спочатку.")
+            return
+        # Із перемішуванням «перший» трек випадковий, тож його вимикаємо
+        if state.get("shuffle_state"):
+            with_device(sp, lambda: sp.shuffle(False))
+        with_device(sp, lambda: sp.start_playback(context_uri=context, offset={"position": 0}))
+        kind = "альбом" if ":album:" in context else "плейлист"
+        log.info(f"Spotify: {kind} спочатку ({context})")
+        tts.speak(f"Граю {kind} з першого треку.")
+    except Exception as e:
+        log.error(f"Spotify restart: {e}")
+        tts.speak("Не вийшло почати спочатку.")
+
+
 def _spotify_playlists(limit: int = 10) -> None:
     """Вголос перераховує плейлисти користувача."""
     sp = _get_spotipy()

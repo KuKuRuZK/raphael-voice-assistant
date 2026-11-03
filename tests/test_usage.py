@@ -31,11 +31,20 @@ def test_report_counts_requests_tokens_and_audio(env, said):
 
 
 def test_warns_once_at_80_and_once_at_100(env, said):
+    env.patch("DAILY_LIMITS", {"gemini:m": {"requests": 5}})
+    for _ in range(6):
+        env.get("record")("gemini:m")
+    assert said == ["m: витрачено вже 80% денного ліміту запитів.",
+                    "m: денний ліміт запитів вичерпано, за моїм підрахунком. Далі працюватиме резерв."]
+
+
+def test_groq_estimate_does_not_cry_wolf(env, said):
+    """Groq поповнює ліміт безперервно: підрахунок за добу збрехав «вичерпано» (2026-11-03)."""
     env.patch("DAILY_LIMITS", {"groq:m": {"requests": 5}})
     for _ in range(6):
         env.get("record")("m")
-    assert said == ["m: витрачено вже 80% денного ліміту запитів.",
-                    "m: денний ліміт запитів вичерпано, за моїм підрахунком. Далі працюватиме резерв."]
+    assert said == []
+    assert "6 запитів з 5" in env.get("report_text")()
 
 
 def test_survives_restart_and_resets_next_day(env, said, tmp_path):
