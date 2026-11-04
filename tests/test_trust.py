@@ -73,3 +73,23 @@ def test_reply_updates_trust_and_prompt_has_it(trust, env):
     notes.save_memory({"trust": {"value": 80, "day": datetime.now().date().isoformat(), "gained_today": 0,
                                  "last_seen": datetime.now().isoformat(timespec="minutes")}})
     assert "ДОВІРА: ти йому довіряєш" in prompt.build_system_prompt()
+
+
+@pytest.mark.parametrize("text,delta", [
+    # шматки інших слів не рахуються
+    ("постав процедуру на завтра", "plain"),
+    ("я зараз поступаю в магістратуру", "plain"),
+    ("куди класти ключі?", "plain"),
+    ("суперечка вийшла", "plain"),
+    # цілі слова рахуються, і з розділовими знаками
+    ("Дякую!", "kind"),
+    ("ну класно вийшло", "kind"),
+    ("ти найкраща, Лін", "kind"),
+    ("ти дура, чи що?", "rude"),
+    ("заткнися вже", "rude"),
+])
+def test_only_whole_words_count(trust, text, delta):
+    trust.on_exchange(text, datetime(2026, 11, 4, 9, 0))
+    expected = {"plain": trust.PER_EXCHANGE, "kind": trust.PER_EXCHANGE + trust.KIND_BONUS,
+                "rude": trust.PER_EXCHANGE - trust.RUDE_PENALTY}[delta]
+    assert _value() == pytest.approx(trust.START + expected)

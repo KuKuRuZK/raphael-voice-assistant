@@ -10,6 +10,7 @@ import logging
 from datetime import datetime
 
 from raphael import notes
+from raphael import voice_rules as vr
 
 log = logging.getLogger("Лін")
 
@@ -20,9 +21,13 @@ RUDE_PENALTY = 3.0        # «дура», «заткнись»
 DAILY_GAIN_CAP = 6.0      # за день не більше, щоб довіру не можна було накрутити
 DECAY_PER_DAY = 2.0       # за кожен день без розмов, починаючи з другого
 
-KIND = ("дякую", "дякс", "спасибі", "молодець", "розумниця", "умниця", "люблю", "обожнюю",
-        "ти найкраща", "супер", "клас", "чудово", "дуже допомогла")
-RUDE = ("дура", "тупа", "заткнись", "відвали", "ідіотка", "бісиш", "задовбала", "дебілка", "нікчема")
+# Лише цілі слова (тому форми перелічено): шматком слова «процедура» знімала бали
+# як «дура», «поступаю» як «тупа», а «класти» додавала як «клас» (2026-11-04)
+KIND = frozenset({"дякую", "дякс", "дяки", "спасибі", "спасибо", "молодець", "молодчина",
+                  "розумниця", "умниця", "люблю", "обожнюю", "ти найкраща", "супер", "клас",
+                  "класно", "чудово", "дуже допомогла"})
+RUDE = frozenset({"дура", "дурна", "тупа", "тупиця", "заткнись", "заткнися", "відвали",
+                  "ідіотка", "бісиш", "задовбала", "дебілка", "нікчема"})
 
 LEVELS = (   # (від якого рівня, як поводитись); характер той самий, міняється дистанція
     (0,  "ДОВІРА: ти на Влада ображена й відсторонена: коротко, сухо, підколки колючіші, тепла не показуєш."),
@@ -66,11 +71,11 @@ def on_exchange(user_text: str, now: datetime = None) -> float:
     def change(mem):
         t = _trust_of(mem, now)
         _decay(t, now)
-        delta = PER_EXCHANGE + (KIND_BONUS if any(k in low for k in KIND) else 0.0)
+        delta = PER_EXCHANGE + (KIND_BONUS if vr._words_re(KIND).search(low) else 0.0)
         if delta > 0:
             delta = min(delta, max(0.0, DAILY_GAIN_CAP - t["gained_today"]))
             t["gained_today"] = round(t["gained_today"] + delta, 2)
-        if any(r in low for r in RUDE):
+        if vr._words_re(RUDE).search(low):
             delta -= RUDE_PENALTY
         t["value"] = round(min(100.0, max(0.0, t["value"] + delta)), 2)
         t["last_seen"] = now.isoformat(timespec="minutes")
