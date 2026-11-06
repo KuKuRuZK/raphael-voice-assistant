@@ -321,6 +321,22 @@ def execute_action(action_str: str):
             tts.speak(result)
             return result
 
+        elif t == "later":
+            # формат: "час|дія:параметр", час як у note_remind: "30", "18:00", "2026-11-07 09:00"
+            result = notes.later(p)
+            tts.speak(result)
+            return result
+
+        elif t == "mail_watch":
+            result = gmail.mail_watch(p)
+            tts.speak(result)
+            return result
+
+        elif t == "mail_watch_stop":
+            result = gmail.mail_watch_stop(p)
+            tts.speak(result)
+            return result
+
         elif t == "note_list":
             result = notes.note_list()
             tts.speak(result)

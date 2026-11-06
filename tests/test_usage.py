@@ -101,3 +101,15 @@ def test_local_model_is_not_counted_as_groq(env, said):
     assert usage.key("lmstudio:openai/gpt-oss-20b") == "lmstudio:openai/gpt-oss-20b"
     usage.record("lmstudio:openai/gpt-oss-20b", tokens=100)
     assert "локальна модель" in usage.report_text()
+
+
+def test_google_requests_retry_dropped_connections(lin, monkeypatch):
+    """Зʼєднання, що довго простояло, Google закриває, і без повторів монітор пошти падав."""
+    http = pytest.importorskip("googleapiclient.http")
+    from raphael import gmail
+    calls = []
+    monkeypatch.setattr(http.HttpRequest, "execute", lambda self, http=None, num_retries=0: calls.append(num_retries))
+    monkeypatch.setattr(gmail, "_retries_on", False)
+    gmail.retry_dropped_connections()
+    http.HttpRequest.execute(object())
+    assert calls == [2]

@@ -86,6 +86,57 @@ def note_add(text: str, remind_minutes: int = 0, remind_at_str: str = "") -> str
     return f"Записала: «{text}»."
 
 
+# ── Відкладені дії: later:час|дія:параметр ───────────────────────────────────
+# «Перевір пошту через 30 хвилин» раніше ставало нагадуванням «Перевірити Gmail»:
+# о 13:37 Лін лише казала це вголос (лог 2026-11-06). Тепер у нагадуванні лежить сама
+# дія, і в час Х Лін її виконує. Наперед ставимо лише те, що щось читає чи вмикає:
+# перевірка явного наміру в assistant бачить тільки зовнішній тег later, тож
+# незворотне (вимкнути компʼютер, закрити процес, стерти плани) сюди не пускаємо.
+LATER_OK = ("gmail_unread", "gmail_latest", "gmail_search", "gmail_read_full", "calendar_today",
+            "calendar_tomorrow", "calendar_week", "slack_unread", "slack_dm", "slack_mentions",
+            "spotify_", "weather", "get_time", "system_info", "system_health", "note_list",
+            "web_search", "brain_ask", "diary_find", "mail_watch", "usage_report")
+_LATER_WHAT = {
+    "gmail_unread": "перевіряю пошту", "gmail_latest": "дивлюсь останні листи",
+    "gmail_search": "шукаю в пошті", "gmail_read_full": "читаю лист",
+    "calendar_today": "дивлюсь календар на сьогодні", "calendar_tomorrow": "дивлюсь календар на завтра",
+    "calendar_week": "дивлюсь календар на тиждень", "slack_unread": "дивлюсь Slack",
+    "weather": "дивлюсь погоду", "get_time": "кажу час", "system_info": "дивлюсь систему",
+    "system_health": "перевіряю систему", "web_search": "шукаю в інтернеті", "mail_watch": "чекаю лист",
+}
+
+
+def _later_text(action: str) -> str:
+    name, _, param = action.partition(":")
+    what = _LATER_WHAT.get(name) or ("вмикаю музику" if name.startswith("spotify_") else name)
+    return f"{what} «{param.strip()}»" if param.strip() and name in ("gmail_search", "web_search", "mail_watch") else what
+
+
+def later(param: str) -> str:
+    """later:30|gmail_unread: → за 30 хвилин виконати gmail_unread. Час як у note_remind."""
+    when, sep, action = (param or "").partition("|")
+    action = action.strip().strip("[]")
+    if action.upper().startswith("ACTION:"):
+        action = action[7:]
+    name = action.split(":", 1)[0].strip().lower()
+    if not sep or not name:
+        return "Не зрозуміла, що саме й коли зробити."
+    if not name.startswith(LATER_OK):
+        log.warning(f"Відкладена дія: «{action}» наперед не ставлю")
+        return "Таке наперед не ставлю. Нагадати можу, а зробити скажи сам, коли буде час."
+    remind_at = parse_remind_time(when.strip())
+    if remind_at is None:
+        return "Не зрозуміла, коли це зробити. Скажи, наприклад, через 30 хвилин або о 18:00."
+    notes = _load_notes()
+    new_id = max((n["id"] for n in notes), default=0) + 1
+    text = _later_text(action)
+    notes.append({"id": new_id, "text": text, "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                  "remind_at": remind_at, "done": False, "action": action})
+    _save_notes(notes)
+    log.info(f"Відкладена дія #{new_id}: {action} ({remind_at})")
+    return f"Добре, {vr.describe_remind(remind_at)} {text}."
+
+
 def note_list() -> str:
     """Повертає список активних нотаток."""
     notes = [n for n in _load_notes() if not n["done"]]
@@ -155,15 +206,22 @@ def reminder_loop():
             now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
             notes = _load_notes()
             fired_ids = []
-            for n in notes:
-                if n.get("remind_at") and not n["done"] and n["remind_at"] <= now_str:
+            due = [n for n in notes if n.get("remind_at") and not n["done"] and n["remind_at"] <= now_str]
+            for n in due:
+                fired_ids.append(n["id"])
+            if fired_ids:
+                # Спершу прибрати, потім виконувати: дія може тривати (читання листа),
+                # а цикл за 30 с не має запустити її вдруге
+                _save_notes([n for n in notes if n["id"] not in fired_ids])
+            for n in due:
+                if n.get("action"):
+                    log.info(f"Відкладена дія спрацювала: {n['action']}")
+                    tts.speak(f"Як домовлялись, {n['text']}.")
+                    from raphael import actions          # actions сам імпортує notes
+                    actions.execute_action(n["action"])
+                else:
                     log.info(f"Нагадування спрацювало (видаляю план): {n['text']}")
                     tts.speak(f"Нагадую: {n['text']}")
-                    fired_ids.append(n["id"])
-            if fired_ids:
-                # Видаляємо плани що спрацювали — щоб не повторювались
-                notes = [n for n in notes if n["id"] not in fired_ids]
-                _save_notes(notes)
         except Exception as e:
             log.error(f"Reminder loop помилка: {e}")
         time.sleep(30)

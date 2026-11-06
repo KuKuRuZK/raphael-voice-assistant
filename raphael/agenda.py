@@ -37,6 +37,7 @@ def _get_calendar():
         return _calendar_service_cache
     try:
         from googleapiclient.discovery import build
+        gmail.retry_dropped_connections()
         _calendar_service_cache = build("calendar", "v3", credentials=creds)
         _calendar_creds = creds
         log.info("Calendar сервіс ініціалізовано")

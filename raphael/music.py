@@ -460,7 +460,11 @@ def _spotify_restart(what: str = "") -> None:
     if not sp:
         tts.speak(_spotify_unavailable_msg())
         return
-    track_only = (what or "").strip().lower() in ("трек", "track", "пісня", "пісню")
+    # За початком слова: модель на Groq віддала «тре��» (зламане «к»), і точне
+    # порівняння з «трек» увімкнуло плейлист замість треку (лог 2026-11-06, 12:38)
+    # Без слова плейлист чи альбом це трек: «включи спочатку» майже завжди про пісню
+    word = "".join(ch for ch in (what or "").lower() if ch.isalpha())
+    track_only = not word.startswith(("плей", "альб", "playlist", "album", "context"))
     try:
         state = sp.current_playback() or {}
         context = (state.get("context") or {}).get("uri")

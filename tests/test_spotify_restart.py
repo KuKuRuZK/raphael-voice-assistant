@@ -44,7 +44,15 @@ def test_no_playlist_restarts_the_track(music, env):
     sp = Sp({"context": None})
     env.patch("_get_spotipy", lambda: sp)
     music._spotify_restart("")
-    assert sp.calls == [("seek", 0)] and "трек спочатку" in env.spoken[0]
+    assert sp.calls == [("seek", 0)] and "трек спочатку" in env.spoken[0].lower()
+
+
+def test_without_word_it_is_the_track(music, env):
+    """«Включи спочатку» майже завжди про пісню: плейлист лише зі словом плейлист чи альбом."""
+    sp = Sp({"context": {"uri": "spotify:playlist:abc"}})
+    env.patch("_get_spotipy", lambda: sp)
+    music._spotify_restart("")
+    assert sp.calls == [("seek", 0)]
 
 
 @pytest.mark.parametrize("text", ["а можеш почати грати цей плейліст спочатку?", "постав трек спочатку"])
@@ -60,3 +68,11 @@ def test_restart_tag_is_an_action(lin):
     from raphael import llm
     assert llm._find_action("[EMO:tease] Погнали з початку. [ACTION:spotify_restart:плейлист]")[:2] == \
         ("spotify_restart", "плейлист")
+
+
+@pytest.mark.parametrize("what", ["трек", "тре��", "Пісню", "track"])
+def test_track_word_even_when_broken(music, env, what):
+    sp = Sp({"context": {"uri": "spotify:playlist:abc"}})
+    env.patch("_get_spotipy", lambda: sp)
+    music._spotify_restart(what)
+    assert sp.calls == [("seek", 0)]

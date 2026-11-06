@@ -7,6 +7,7 @@ import itertools
 import logging
 import os
 import threading
+import time
 from datetime import datetime
 
 from raphael import llm
@@ -29,6 +30,32 @@ _google_creds_cache = None
 # користуються монітор, дайджест і голосові команди. Два потоки на одному
 # зʼєднанні зрідка давали SSL-помилки, тож запити до Google йдуть по одному.
 _api_lock = threading.RLock()
+
+
+_retries_on = False
+
+
+def retry_dropped_connections() -> None:
+    """Запити до Google без повторів (num_retries=0 за замовчуванням) падали з «EOF
+    occurred in violation of protocol»: сервер закриває зʼєднання, що довго простояло,
+    а httplib2 пробує ним скористатись. Так монітор пошти й календар падали раз у раз
+    (17 разів у лозі до 2026-11-06). googleapiclient сам повторює такі запити новим
+    зʼєднанням, якщо дати йому num_retries, тож даємо його всім .execute() одразу."""
+    global _retries_on
+    if _retries_on:
+        return
+    try:
+        from googleapiclient.http import HttpRequest
+    except (ImportError, AttributeError) as e:      # без повторів працює як раніше
+        log.debug(f"Повтори запитів Google не ввімкнено: {e}")
+        return
+    plain = HttpRequest.execute
+
+    @functools.wraps(plain)
+    def execute(self, http=None, num_retries=2):
+        return plain(self, http=http, num_retries=num_retries)
+    HttpRequest.execute = execute
+    _retries_on = True
 
 
 def _one_at_a_time(fn):
@@ -161,6 +188,7 @@ def _get_gmail_service(token_path: str):
             creds.refresh(Request())
             with open(token_path, "w", encoding="utf-8") as f:
                 f.write(creds.to_json())
+        retry_dropped_connections()
         svc = build("gmail", "v1", credentials=creds)
         _gmail_multi_cache[token_path] = svc
         _auth_ok(token_path)
@@ -745,3 +773,114 @@ def _gmail_check_new() -> list:
     except Exception as e:
         log.error(f"Gmail monitor check: {e}")
         return []
+
+
+# ============================================================
+#  ЧЕКАТИ ЛИСТ: mail_watch:запит
+# ============================================================
+# «Я подався на Gemini, скажи, коли прийде відповідь від Google» (2026-11-06): монітор
+# пошти каже лише «новий лист від…», а тут треба дочекатись саме цього листа й сказати,
+# про що він і що робити. Очікування лежать у memory.json ("mail_watch"), тож
+# переживають перезапуск; спрацьовують один раз; кидаються через WATCH_DAYS.
+WATCH_DAYS = 7
+WATCH_EVERY = 120        # секунд між перевірками
+
+
+def _watches() -> list:
+    from raphael import notes
+    return list(notes.load_memory().get("mail_watch") or [])
+
+
+def mail_watch(query: str) -> str:
+    from raphael import notes
+    query = (query or "").strip()
+    if not query:
+        return "Скажи, від кого чи про що лист чекати."
+    if not _gmail_accounts():
+        return auth_warning() or "Gmail не налаштований."
+    now = int(time.time())
+
+    def add(mem):
+        watches = [w for w in mem.get("mail_watch") or [] if w["q"] != query]
+        mem["mail_watch"] = watches + [{"q": query, "since": now, "until": now + WATCH_DAYS * 86400}]
+    notes.update_memory(add)
+    log.info(f"Чекаю лист: {query}")
+    return f"Добре, чекаю лист «{query}». Щойно прийде, скажу, про що він і що з ним робити."
+
+
+def mail_watch_stop(query: str = "") -> str:
+    from raphael import notes
+    query = (query or "").strip()
+    left = []
+
+    def drop(mem):
+        mem["mail_watch"] = [w for w in mem.get("mail_watch") or [] if query and w["q"] != query]
+        left.extend(mem["mail_watch"])
+    notes.update_memory(drop)
+    return "Більше не чекаю." if not left else f"Не чекаю «{query}», решту далі чекаю."
+
+
+def _letter_news(svc, msg_id: str) -> str:
+    """Що сказати про лист, якого чекали: від кого, тема, суть і що робити."""
+    with _api_lock:
+        full = svc.users().messages().get(userId="me", id=msg_id, format="full").execute()
+    h = _gmail_headers(full)
+    sender = _gmail_parse_sender(h.get("From", "невідомо"))
+    subject = h.get("Subject", "без теми")
+    body = " ".join(_gmail_extract_body(full).split())[:3000] or (full.get("snippet") or "")
+    head = f"Прийшов лист, якого ти чекав: від {sender}, тема «{subject}»."
+    try:
+        resp = llm.llm_chat(llm.main_model(), messages=[{"role": "user", "content": (
+            "Влад чекав цей лист. Українською, 2-3 короткі речення для озвучки: про що лист і чи треба "
+            "Владу щось зробити (підтвердити, перейти за посиланням, заповнити, до якого терміну). Якщо "
+            "нічого робити не треба, так і скажи. Без вступу й без посилань.\n\n"
+            f"Від: {sender}\nТема: {subject}\n\n{body}")}], max_tokens=400, temperature=0.3)
+        summary = llm._ACTION_RE.sub("", resp.choices[0].message.content or "").strip()
+    except Exception as e:
+        log.warning(f"Чекала лист: переказ не вдався: {e}")
+        summary = ""
+    return f"{head} {summary or body[:300]}".strip()
+
+
+def _watch_check() -> int:
+    """Перевірити очікування. → скільки листів дочекались."""
+    from raphael import notes
+    now = int(time.time())
+    watches = _watches()
+    if not watches:
+        return 0
+    done, news = [], []
+    for w in watches:
+        if now > w["until"]:
+            done.append(w["q"])
+            log.info(f"Чекала лист «{w['q']}» {WATCH_DAYS} днів, не прийшов: більше не чекаю")
+            continue
+        for label, svc in _gmail_accounts():
+            try:
+                with _api_lock:
+                    res = svc.users().messages().list(
+                        userId="me", q=f"({w['q']}) after:{w['since']}", maxResults=1).execute()
+                found = res.get("messages") or []
+                if found:
+                    news.append(_letter_news(svc, found[0]["id"]))
+                    done.append(w["q"])
+                    log.info(f"Дочекалась листа «{w['q']}» у скриньці «{label}»")
+                    break
+            except Exception as e:
+                _account_error(label, "watch", e)
+    if done:
+        notes.update_memory(lambda mem: mem.update(
+            mail_watch=[x for x in mem.get("mail_watch") or [] if x["q"] not in done]))
+    for text in news:
+        tts.speak(text)
+    return len(news)
+
+
+def mail_watch_loop():
+    time.sleep(60)
+    while True:
+        try:
+            _watch_check()
+        except Exception as e:
+            log.error(f"Чекаю лист: {e}")
+        time.sleep(WATCH_EVERY)

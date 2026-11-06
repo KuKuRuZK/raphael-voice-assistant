@@ -106,7 +106,7 @@ for _noisy in ("PIL", "httpcore", "httpx", "urllib3", "spotipy"):
 
 import pystray  # noqa: E402
 
-from raphael import (agenda, assistant, avatar, briefing, diary, hotkeys, monitor,  # noqa: E402
+from raphael import (agenda, assistant, avatar, briefing, diary, gmail, hotkeys, monitor,  # noqa: E402
                      notes, runtime, stt, sysmon, tts, ui, vibes)
 
 log = logging.getLogger("Лін")
@@ -189,6 +189,7 @@ def main():
     assistant.history[1:] = diary.recent_turns()
     threading.Thread(target=assistant.assistant_loop,   daemon=True).start()
     threading.Thread(target=diary.diary_loop,       daemon=True).start()
+    threading.Thread(target=gmail.mail_watch_loop,  daemon=True).start()   # «скажи, коли прийде лист»
     threading.Thread(target=notes.reminder_loop,    daemon=True).start()
     threading.Thread(target=briefing.briefing_loop,    daemon=True).start()
     threading.Thread(target=monitor.monitor_loop,     daemon=True).start()

@@ -26,7 +26,9 @@ _COMMAND_HINTS = (
     "що на екрані", "сховай", "згорни", "розгорни", "перемкни",
     "що в пошті", "плейлист", "шафл", "перемішай", "стеж за",
     # Whisper пише і «плейліст»; «почати грати … спочатку» до 2026-11-03 йшло локальній
-    "плейліст", "спочатку", "грати", "трек", "пісн",
+    "плейліст", "спочатку", "грати", "трек", "пісн", "заново", "з початку", "перемотай",
+    # Відкладені дії й очікування листа (2026-11-06): «перевір пошту через годину»
+    "пошт", "лист", "перевір", "через", "чекай", "коли прийде",
     # Пошук: локальна gpt-oss-20b тут «вирішує» викликати функцію, якої в неї нема,
     # і повертає порожньо (3 з 4 спроб у перевірці 2026-11-03). Хай одразу хмара
     "знайди", "пошукай", "загугли", "погугли",
@@ -423,6 +425,7 @@ _LOCAL_TALK_ACTIONS = (
     "get_time", "weather", "calendar_today", "calendar_tomorrow", "calendar_week",
     "gmail_unread", "gmail_latest", "slack_unread", "spotify_current", "system_info",
     "note_list", "diary_find", "usage_report",
+    "mail_watch",                       # лише чекає лист: Gemma сама ставить його на «повідом, коли напишуть»
 )
 
 
@@ -604,7 +607,7 @@ _ACTION_PREFIXES = (
     "screen_", "focus_", "memory_", "volume_", "window_", "notepad_",
     "claude_", "ask_", "kill_", "type_", "voice_", "timer", "weather",
     "currency", "hotkey", "shutdown", "get_time", "minimize_", "close_",
-    "vibe_", "avatar", "usage_", "diary_",
+    "vibe_", "avatar", "usage_", "diary_", "later", "mail_",
 )
 
 # Дія в дужках, але без двокрапки: «[gmail_unread]»
