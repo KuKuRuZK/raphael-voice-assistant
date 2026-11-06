@@ -183,6 +183,11 @@ def _decode(raw: bytes) -> str:
 
 def _parse_events(xml: str) -> list:
     """Події з виводу wevtutil /f:xml → [(provider, level, event_id)]."""
+    return [e[:3] for e in _parse_events_data(xml)]
+
+
+def _parse_events_data(xml: str) -> list:
+    """Те саме плюс поля події (<Data>): у службових подіях там імʼя служби й код помилки."""
     events = []
     for ev in re.findall(r"<Event\b.*?</Event>", xml, re.S):
         provider = re.search(r"<Provider\s[^>]*?Name=['\"]([^'\"]*)", ev)
@@ -190,8 +195,46 @@ def _parse_events(xml: str) -> list:
         event_id = re.search(r"<EventID[^>]*>(\d+)</EventID>", ev)
         events.append((provider.group(1) if provider else "",
                        int(level.group(1)) if level else 2,
-                       event_id.group(1) if event_id else ""))
+                       event_id.group(1) if event_id else "",
+                       re.findall(r"<Data\b[^>]*>(.*?)</Data>", ev, re.S)))
     return events
+
+
+# Відомий шум журналу System: кожен запуск і вимкнення Windows 11 сиплють цим, а на
+# роботу воно не впливає. Через нього Лін казала «7 помилок» після трьох перезапусків
+# поспіль, хоча справжня була одна (2026-11-06).
+_NOISE = {
+    ("microsoft-windows-bitlocker-driver", "24641"),        # ключ BitLocker під час перезапуску
+    ("microsoft-windows-windows firewall with advanced security", "2042"),   # брандмауер на старті
+    ("microsoft-windows-distributedcom", "10010"),          # служба не встигла зареєструватись (SmartScreen)
+    ("microsoft-windows-distributedcom", "10016"),          # права DCOM, відомий шум
+    ("microsoft-windows-deviceassociationservice", "3502"), # не вдалося відʼєднати пристрій (принтер)
+}
+# 7023 з кодом «вимкнення вже йде»: служба просто зупинилась разом з Windows
+_SHUTDOWN_CODES = ("%%1115", "%%2147943515")
+
+
+def _is_event_noise(provider: str, event_id: str, data: list) -> bool:
+    if (provider.lower(), event_id) in _NOISE:
+        return True
+    return provider == "Service Control Manager" and event_id == "7023" and any(
+        d.strip() in _SHUTDOWN_CODES for d in data)
+
+
+# Служби, чиї технічні імена нічого не скажуть на слух
+_SERVICE_NAMES = {"gvcidrv": "драйвер підсвітки Gigabyte RGB Fusion", "wersvc": "звіти про помилки Windows"}
+_SERVICE_PROBLEM = {"7000": "не запустилась", "7009": "не відповіла вчасно", "7011": "не відповіла вчасно",
+                    "7023": "зупинилась з помилкою", "7024": "зупинилась з помилкою",
+                    "7031": "аварійно зупинилась", "7034": "аварійно зупинилась", "7038": "не змогла увійти"}
+
+
+def _what_failed(provider: str, event_id: str, data: list) -> str:
+    """Подія → кілька слів, що сталося («служба X не запустилась», «відеодрайвер дав збій»)."""
+    if provider == "Service Control Manager" and event_id in _SERVICE_PROBLEM:
+        name = data[0].strip() if data else ""
+        name = f" «{_SERVICE_NAMES.get(name.lower(), name)}»" if name else ""
+        return f"служба{name} {_SERVICE_PROBLEM[event_id]}"
+    return _describe_event(provider, "").rstrip(".").lower()
 
 
 def _get_event_log_errors():
@@ -276,8 +319,9 @@ def _system_health_report() -> str:
     try:
         cpu = psutil.cpu_percent(interval=0.5)
         mem = psutil.virtual_memory()
-        parts.append(f"процесор {cpu:.0f} відсотків")
-        parts.append(f"пам'ять {mem.percent:.0f} відсотків")
+        # «22 відсотки», а не «22 відсотків»
+        parts.append(f"процесор {vr.count(round(cpu), 'відсоток', 'відсотки', 'відсотків')}")
+        parts.append(f"пам'ять {vr.count(round(mem.percent), 'відсоток', 'відсотки', 'відсотків')}")
         disk = psutil.disk_usage("C:\\")
         parts.append(f"на диску C вільно {disk.free / 1024**3:.0f} гігабайт")
         batt = psutil.sensors_battery()
@@ -289,14 +333,27 @@ def _system_health_report() -> str:
 
     status = "Все в нормі" if not parts else "Зараз: " + ", ".join(parts)
 
-    # Останні помилки за 30 хв (без зміни baseline моніторингу)
+    # Останні помилки за 30 хв (без зміни baseline моніторингу). Відомий шум Windows
+    # не рахуємо, а решту називаємо: «7 помилок» без пояснень лише лякало
     try:
-        cap = 20
-        cnt = len(_parse_events(_query_system_log(30 * 60 * 1000, cap)))
-        if cnt:
-            at_least = "щонайменше " if cnt >= cap else ""
-            status += (f". За останні пів години в журналі "
-                       f"{at_least}{vr.count(cnt, 'помилка', 'помилки', 'помилок')}")
+        cap = 40
+        events = _parse_events_data(_query_system_log(30 * 60 * 1000, cap))
+        real = [e for e in events if not _is_event_noise(e[0], e[2], e[3])]
+        if real:
+            at_least = "щонайменше " if len(events) >= cap else ""
+            kinds = {}
+            for provider, _level, event_id, data in real:
+                what = _what_failed(provider, event_id, data)
+                kinds[what] = kinds.get(what, 0) + 1
+            top = sorted(kinds.items(), key=lambda kv: -kv[1])[:3]
+            said = "; ".join(what + (f" ({vr.count(n, 'раз', 'рази', 'разів')})" if n > 1 else "")
+                             for what, n in top)
+            more = len(kinds) - len(top)
+            status += (f". За останні пів години в журналі {at_least}"
+                       f"{vr.count(len(real), 'помилка', 'помилки', 'помилок')}: {said}"
+                       + (f", і ще {vr.count(more, 'вид', 'види', 'видів')}" if more > 0 else ""))
+        elif events:
+            status += ". Помилок у журналі немає, лише звичний шум Windows"
         else:
             status += ". Помилок у журналі немає"
     except Exception as e:
