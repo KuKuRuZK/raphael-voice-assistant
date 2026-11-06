@@ -23,6 +23,7 @@ from raphael import music
 from raphael import notes
 from raphael import pc
 from raphael import runtime
+from raphael import screen_agent
 from raphael import settings as cfg
 from raphael import slack_chat
 from raphael import sysmon
@@ -318,6 +319,12 @@ def execute_action(action_str: str):
             txt = parts_n[0].strip()
             time_val = parts_n[1].strip() if len(parts_n) > 1 else "30"
             result = notes.note_add(txt, remind_at_str=time_val)
+            tts.speak(result)
+            return result
+
+        elif t == "screen_do":
+            # Мишка й клавіатура (screen_agent); у потоці команди, щоб її «так/ні» слухав мікрофон
+            result = screen_agent.run(p)
             tts.speak(result)
             return result
 
