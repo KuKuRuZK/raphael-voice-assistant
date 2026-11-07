@@ -278,3 +278,26 @@ def test_stale_tunnel_from_killed_lin_is_cleared(env, lin, monkeypatch):
     monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: [ours, other_ssh, lin_itself])
     assert tg_lin._kill_stale_tunnels() == 1
     assert ours.killed and not other_ssh.killed and not lin_itself.killed
+
+
+def test_home_gone_while_waiting_is_offline_at_once():
+    """Домашню вбили посеред запиту: хаб не вважає її «вдома» ще 25 с (2026-11-07)."""
+    clock = Clock()
+    r = hub_mod.Router(clock)
+    alive = [True]
+    result = []
+    t = threading.Thread(target=lambda: result.append(r.take_home(wait=5, alive=lambda: alive[0])))
+    t.start()
+    time.sleep(0.05)
+    assert r.home_online() is True
+    alive[0] = False
+    t.join(3)
+    assert result == [None] and r.home_online() is False
+
+
+def test_failed_delivery_goes_to_server_right_away():
+    clock = Clock()
+    r = hub_mod.Router(clock)
+    r.give_back([{"message": msg("не дійшло")}])
+    assert r.home_online() is False
+    assert [u["message"]["text"] for u in r.reclaim()] == ["не дійшло"]

@@ -37,6 +37,18 @@ HOME_GRACE = 15             # стільки секунд повідомленн
 LONG_POLL = 25              # скільки тримати запит домашньої, коли нічого нового
 
 
+def _peer_alive(sock) -> bool:
+    """Чи домашня ще тримає зʼєднання: запит уже прочитано, тож «можна читати» тут
+    означає лише кінець зʼєднання (тунель закрився, ПК вимкнувся)."""
+    import select
+    import socket
+    try:
+        readable, _, _ = select.select([sock], [], [], 0)
+        return not readable or sock.recv(1, socket.MSG_PEEK) != b""
+    except OSError:
+        return False
+
+
 class Router:
     """Хто відповідає на оновлення: домашня Лін чи сервер."""
 
@@ -56,19 +68,43 @@ class Router:
             self.home_queue.append((self.clock(), update))
             self.cond.notify_all()
 
-    def take_home(self, wait: float = LONG_POLL) -> list:
-        """Запит домашньої: усе, що для неї є, або [] за wait секунд."""
+    def take_home(self, wait: float = LONG_POLL, alive=lambda: True):
+        """Запит домашньої: усе, що для неї є, або [] за wait секунд. None, якщо домашня
+        пішла, поки чекала (alive() став False): тоді вона вже не вдома, і нічого не забрано.
+
+        Без alive() хаб 2026-11-07 ще 25 с вважав «вдома» Лін, яку вже вбили, а повідомлення
+        віддав би мертвому зʼєднанню (BrokenPipeError у журналі)."""
         with self.cond:
             self.waiting += 1
             self.home_seen = self.clock()
+            gone = False
             try:
-                self.cond.wait_for(lambda: self.home_queue, timeout=wait)
+                left = wait
+                while not self.home_queue and left > 0:
+                    if not alive():
+                        gone = True
+                        return None
+                    self.cond.wait(min(1.0, left))
+                    left -= 1.0
+                if not alive():
+                    gone = True
+                    return None
                 taken = [u for _, u in self.home_queue]
                 self.home_queue.clear()
                 return taken
             finally:
                 self.waiting -= 1
-                self.home_seen = self.clock()
+                if not gone:
+                    self.home_seen = self.clock()
+                else:
+                    self.home_seen = float("-inf")
+
+    def give_back(self, updates: list) -> None:
+        """Віддати домашній не вдалось (зʼєднання впало): серверу, без очікування."""
+        with self.cond:
+            stale = self.clock() - HOME_GRACE
+            self.home_queue[:0] = [(stale, u) for u in updates]
+            self.home_seen = float("-inf")
 
     def reclaim(self, grace: float = HOME_GRACE) -> list:
         """Що домашня так і не забрала: повертаємо серверу."""
@@ -185,7 +221,14 @@ class Hub:
                 if self.headers.get("X-Lin-Key") != key:
                     return self._send(403, {"error": "чужий"})
                 wait = float(urllib.parse.parse_qs(url.query).get("wait", [LONG_POLL])[0])
-                self._send(200, {"updates": hub.router.take_home(min(wait, 50))})
+                updates = hub.router.take_home(min(wait, 50), alive=lambda: _peer_alive(self.connection))
+                if updates is None:
+                    return                          # домашня пішла, відповідати нікому
+                try:
+                    self._send(200, {"updates": updates})
+                except OSError:
+                    log.info("Домашня зникла, поки віддавала; повідомлення відповість сервер")
+                    hub.router.give_back(updates)
 
         return ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
 
