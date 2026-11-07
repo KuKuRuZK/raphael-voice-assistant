@@ -155,3 +155,29 @@ def test_prompt_knows_vlad_is_on_phone(env, lin):
     env.patch("LIN_CHANNEL", "telegram")
     text = prompt.build_system_prompt()
     assert "TELEGRAM З ТЕЛЕФОНА" in text and "[ACTION:avatar:дія]" not in text
+
+
+def test_wipe_plans_heard_in_russian_letters_asks_first(env, lin, monkeypatch):
+    """2026-11-07 з телефона: «Треба, щоб ти почистила всі планы» не впізнавалось (ы, «почистила»)."""
+    from raphael import assistant, notes
+    asked, wiped = [], []
+    monkeypatch.setattr(assistant, "_confirm", lambda q, extra=(): asked.append(q) or False)
+    monkeypatch.setattr(notes, "note_clear", lambda what: wiped.append(what) or "Стерла.")
+    monkeypatch.setattr(assistant, "ask_lin", lambda text: pytest.fail("це швидка команда, без моделі"))
+    assistant.process_command("Треба, щоб ти почистила всі планы")
+    assert len(asked) == 1 and wiped == []                     # спитала й, почувши «ні», не стерла
+    assert env.spoken[-1] == "Не чіпаю."
+
+
+def test_obsidian_plans_are_not_lins_plans(env, lin, monkeypatch):
+    from raphael import assistant
+    to_model = []
+    monkeypatch.setattr(assistant, "_confirm", lambda *a: pytest.fail("це не її плани"))
+    monkeypatch.setattr(assistant, "ask_lin", lambda text: to_model.append(text) or "")
+    assistant.process_command("почисти всі плани в обсідіані")
+    assert to_model == ["почисти всі плани в обсідіані"]
+
+
+def test_tomorrow_weather_is_weather_not_reminder(env, lin):
+    from raphael import prompt
+    assert "'яка завтра погода'" in prompt.build_system_prompt()

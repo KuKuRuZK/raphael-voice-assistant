@@ -341,7 +341,9 @@ def process_command(command: str, channel: str = "voice"):
     print(f"\n  Ви:  {command}")
 
     # ── Швидкі відповіді без Groq ────────────────────────────
-    cmd = command.lower().strip()
+    # Whisper інколи пише російськими літерами («почистила всі планы», 2026-11-07),
+    # і фрази нижче не впізнавались: зводимо до українських
+    cmd = command.lower().strip().replace("ы", "и").replace("э", "е").replace("ё", "е")
 
     # Повтори останню відповідь. Лише коротке «повтори / не почув / ще раз»:
     # раніше будь-яка фраза з «повтор» чи «ще раз» («повторюй трек», «вимкни
@@ -386,8 +388,11 @@ def process_command(command: str, channel: str = "voice"):
 
     # Очищення планів голосом. Стирання ВСІХ планів незворотне, тому так само
     # через «так/ні», як і коли це вирішує модель (раніше тут стирало одразу).
-    if any(w in cmd for w in ("очисти всі плани", "видали всі плани", "очисти плани",
-                              "видали всі нотатки", "очисти список планів", "видали плани")):
+    wipe = re.search(r"\b(о|по)?чист|\bвидал|\bстер|\bзітр", cmd)
+    if not re.search(r"обсід|сховищ|obsidian", cmd) and (
+            any(w in cmd for w in ("очисти всі плани", "видали всі плани", "очисти плани",
+                                   "видали всі нотатки", "очисти список планів", "видали плани"))
+            or (wipe and re.search(r"\bвсі\s+план", cmd))):
         question, extra_yes = _MUST_CONFIRM["note_clear"]
         tts.speak(notes.note_clear("all") if _confirm(question, extra_yes) else "Не чіпаю.")
         return
