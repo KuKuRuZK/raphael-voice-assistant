@@ -26,7 +26,9 @@ PROVIDERS = {
 MODELS = [m.strip() for m in (os.environ.get("LIN_CLOUD_MODELS") or
           "groq:openai/gpt-oss-120b,gemini:gemini-3.1-flash-lite,groq:openai/gpt-oss-20b").split(",") if m.strip()]
 HISTORY = 12                # останні репліки, що йдуть у запит (6 обмінів)
-ACTION_RE = re.compile(r"\[ACTION:([a-z_]+):([^\]]*)\]", re.I)
+# Модель інколи ставить пробіли всередині: «[ ACTION:remind:20|випити воду ]» (2026-11-07),
+# і такий тег пішов Владу текстом
+ACTION_RE = re.compile(r"\[\s*ACTION\s*:\s*([a-z_]+)\s*:\s*([^\]]*?)\s*\]", re.I)
 
 _clients = {}
 
@@ -62,6 +64,7 @@ def chat(messages: list, max_tokens: int = 600) -> str:
                                                           temperature=0.7, **_kwargs(model))
             text = (r.choices[0].message.content or "").strip()
             if text:
+                log.info(f"Сервер: відповіла {spec}")
                 return text
             errors.append(f"{spec}: порожньо")
         except Exception as e:
@@ -102,6 +105,7 @@ def system_prompt() -> str:
         "[ACTION:weather:місто] погода зараз і на завтра (порожньо: Вільнюс); "
         "[ACTION:search:запит] пошук в інтернеті, коли питають факти, новини, ціни, розклади; "
         "[ACTION:remind:час|текст] нагадати в Telegram, час: хвилини '30', '18:00', 'завтра 09:00'. "
+        "На привітання, жарти й звичайну розмову тегів не став. Пиши лише українською, без русизмів. "
         "Приклади: 'яка завтра погода' → [ACTION:weather:]; 'нагадай через годину подзвонити мамі' → "
         "[ACTION:remind:60|подзвонити мамі]; 'хто виграв вчора' → [ACTION:search:хто виграв вчора]. "
         f"Зараз {tools.now():%H:%M, %d.%m.%Y} (Вільнюс)."

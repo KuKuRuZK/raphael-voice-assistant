@@ -248,3 +248,12 @@ def test_home_uses_hub_instead_of_telegram_when_configured(env, lin, monkeypatch
     monkeypatch.setattr(tg_lin, "_worker", lambda: None)
     tg_lin.run()
     assert used == ["hub"]
+
+
+def test_tag_with_spaces_is_still_a_tag(brain):
+    """«[ ACTION:remind:20|випити воду ]» з пробілами пішло Владу текстом (2026-11-07)."""
+    b, replies, _ = brain
+    replies.append("[ ACTION:remind:20|випити воду ]")
+    answer = b.answer("нагадай через 20 хвилин випити воду")
+    assert "ACTION" not in answer and "випити воду" in answer
+    assert b.reminders.due(tools.now() + timedelta(minutes=21)) == ["випити воду"]
