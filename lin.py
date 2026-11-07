@@ -2,7 +2,7 @@
 Лін: точка входу. Запуск: pythonw lin.py (або start_hidden.vbs).
 
 Тут лише те, що має статися раніше за все інше (журнал падінь, вікна дочірніх
-процесів, логи), і main(): вікно, трей, фонові потоки. Уся логіка живе в
+процесів, логи), і main(): трей, фонові потоки. Уся логіка живе в
 пакеті raphael/, карта модулів у raphael/__init__.py.
 """
 import logging
@@ -107,13 +107,24 @@ for _noisy in ("PIL", "httpcore", "httpx", "urllib3", "spotipy"):
 import pystray  # noqa: E402
 
 from raphael import (agenda, assistant, avatar, briefing, diary, gmail, hotkeys, monitor,  # noqa: E402
-                     notes, runtime, stt, sysmon, tts, ui, vibes)
+                     notes, runtime, stt, sysmon, tts, vibes)
 
 log = logging.getLogger("Лін")
 
 # ============================================================
 
 _INSTANCE_LOCK = None   # сокет-замок (тримаємо відкритим поки Lin жива)
+
+
+def _tray_image():
+    """Значок трею: маска Лін (mask.ico у корені проєкту), без неї золоте коло."""
+    from PIL import Image, ImageDraw
+    try:
+        return Image.open(os.path.join(cfg.SCRIPT_DIR, "mask.ico")).convert("RGBA").resize((64, 64), Image.LANCZOS)
+    except Exception:
+        img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
+        ImageDraw.Draw(img).ellipse([6, 6, 58, 58], fill=(20, 18, 40, 255), outline=(233, 207, 134, 255), width=5)
+        return img
 
 
 def _ensure_single_instance():
@@ -151,11 +162,9 @@ def main():
                 _f.write("duplicate instance")
         except Exception:
             pass
-        import tkinter as _tk
-        import tkinter.messagebox as _tkmsg
-        root = _tk.Tk(); root.withdraw()
-        _tkmsg.showwarning("Лін", "Лін вже запущена!\nЗакрий попередню копію через трей.")
-        root.destroy()
+        import ctypes
+        ctypes.windll.user32.MessageBoxW(0, "Лін вже запущена!\nЗакрий попередню копію через трей.",
+                                         "Лін", 0x30)                     # значок «увага»
         sys.exit(0)
 
     # Прибираємо маркер зупинки (ми ж щойно стартували)
@@ -164,12 +173,6 @@ def main():
             os.remove(cfg.STOP_MARKER)
     except Exception:
         pass
-
-    # ── Створюємо GUI ПЕРШИМ, щоб вітання показало анімацію ──
-    runtime.LIN_UI = ui.LinUI()
-    if not cfg.UI_WINDOW:
-        runtime.LIN_UI.hide()                # стан показує тіло; вікно лише з трею
-    log.info("GUI створено" + ("" if cfg.UI_WINDOW else " (сховане, UI_WINDOW false)"))
 
     # ── Гарячі клавіші (push-to-talk) ─────────────────────────
     hotkeys._setup_hotkeys()
@@ -206,28 +209,11 @@ def main():
             avatar.quit_body()                   # Лін вимикається цілком: і мозок, і тіло
             notes.update_memory_after_session(assistant.history)
             icon.stop()
-            try:
-                runtime.LIN_UI.root.quit()
-            except Exception:
-                pass
             runtime._mark_stop()
             os._exit(0)
 
         def open_log(icon, item):
             subprocess.Popen(f'notepad "{cfg.LOG_PATH}"')
-
-        def show_window(icon, item):
-            if runtime.LIN_UI:
-                def _show():
-                    runtime.LIN_UI.set_compact(False)        # завжди повне вікно
-                    runtime.LIN_UI.root.deiconify()
-                    runtime.LIN_UI.root.lift()
-                    runtime.LIN_UI.root.attributes("-topmost", True)
-                runtime.LIN_UI.root.after(0, _show)
-
-        def compact_window(icon, item):
-            if runtime.LIN_UI:
-                runtime.LIN_UI.root.after(0, lambda: runtime.LIN_UI.set_compact(True))
 
         def do_digest(icon, item):
             threading.Thread(target=lambda: briefing.morning_briefing(greeting=False), daemon=True).start()
@@ -275,7 +261,7 @@ def main():
 
         icon = pystray.Icon(
             "Лін",
-            ui.create_tray_icon(),
+            _tray_image(),
             "Лін: голосова помічниця",
             menu=pystray.Menu(
                 pystray.MenuItem("✦ Лін активна", None, enabled=False),
@@ -291,8 +277,6 @@ def main():
                 pystray.MenuItem("📧 Моніторинг пошти", toggle_mail_tray,
                                  checked=lambda i: monitor._MONITOR["gmail"]),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Показати вікно", show_window),
-                pystray.MenuItem("Згорнути до іконки", compact_window),
                 pystray.MenuItem("Показати лог",   open_log),
                 pystray.Menu.SEPARATOR,
                 pystray.MenuItem("Вимкнути Лін повністю", on_quit),
@@ -301,13 +285,10 @@ def main():
         log.info("Трей запущено")
         icon.run()
 
-    threading.Thread(target=_run_tray, daemon=True).start()
+    # Трей і є головний цикл: окремого вікна з орбом більше нема (стан показує тіло),
+    # а без tkinter процес легший. Вихід лише з трею, там os._exit.
+    _run_tray()
 
-    # ── Запускаємо цикл GUI на головному потоці ──────────────
-    log.info("GUI запущено")
-    runtime.LIN_UI.root.mainloop()
-
-    # Якщо вікно закрили через X — зберігаємо пам'ять
     notes.update_memory_after_session(assistant.history)
     runtime._mark_stop()
     os._exit(0)

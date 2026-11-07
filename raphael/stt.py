@@ -247,9 +247,9 @@ def listen(timeout=30, phrase_limit=20, passive=False, on_open=None) -> str:
     губилось: «Лін, будь ласка» ставало «время, подлазко» (лог 2026-11-03).
     """
     global _mic_calibrated, _listen_failures
-    show = bool(runtime.LIN_UI) and not passive
+    show = not passive
     if show:
-        runtime.LIN_UI.safe_set_state("listening")
+        runtime.show_state("listening")
     try:
         while True:
             _wait_tts_quiet()
@@ -270,7 +270,7 @@ def listen(timeout=30, phrase_limit=20, passive=False, on_open=None) -> str:
                     audio = recognizer.listen(source, timeout=timeout, phrase_time_limit=phrase_limit)
                 except sr.WaitTimeoutError:
                     log.debug("STT: тайм-аут")
-                    if show: runtime.LIN_UI.safe_set_state("idle")
+                    if show: runtime.show_state("idle")
                     return ""
             if tts._tts_active.is_set() or tts._tts_epoch != epoch:
                 log.debug("STT: запис наклався на озвучку, відкидаю і слухаю знову")
@@ -281,11 +281,11 @@ def listen(timeout=30, phrase_limit=20, passive=False, on_open=None) -> str:
 
         if not text:
             log.debug("STT: не розпізнано")
-            if show: runtime.LIN_UI.safe_set_state("idle")
+            if show: runtime.show_state("idle")
             return ""
 
         if show:
-            runtime.LIN_UI.safe_set_state("thinking", text)
+            runtime.show_state("thinking", text)
         return text
 
     except Exception as e:
@@ -298,7 +298,7 @@ def listen(timeout=30, phrase_limit=20, passive=False, on_open=None) -> str:
             log.debug(f"listen() помилка: {e}")
         # Інший мікрофон, що зʼявиться замість зниклого, треба відкалібрувати заново
         _mic_calibrated = False
-        if show: runtime.LIN_UI.safe_set_state("idle")
+        if show: runtime.show_state("idle")
         # Без мікрофона цикл інакше крутився б без паузи: 1, 2, 4 ... 30 с
         time.sleep(min(LISTEN_BACKOFF_MAX, 2 ** min(_listen_failures - 1, 5)))
         return ""
@@ -387,8 +387,7 @@ def wait_for_wake(timeout=30, interrupt=None):
                     partial = set(json.loads(rec.PartialResult()).get("partial", "").split())
                     if partial & wanted:
                         heard_name = True            # «Слухаю» з першим звуком імені
-                        if runtime.LIN_UI:
-                            runtime.LIN_UI.safe_set_state("listening")
+                        runtime.show_state("listening")
         return ""
     except Exception as e:
         log.error(f"Локальний детектор імені: {e}", exc_info=True)

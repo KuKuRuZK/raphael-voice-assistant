@@ -75,7 +75,7 @@ def _dictate_to_brain() -> None:
         finally:
             _brain_dictating.clear()
             _brain_stop.clear()
-            if runtime.LIN_UI: runtime.LIN_UI.safe_set_state("idle")
+            runtime.show_state("idle")
 
     threading.Thread(target=_run, daemon=True).start()
 
@@ -205,6 +205,6 @@ def _dictate_to_cursor() -> None:
             tts.speak("Не вийшло надрукувати.")
         finally:
             _typing_dictation.clear()
-            if runtime.LIN_UI: runtime.LIN_UI.safe_set_state("idle")
+            runtime.show_state("idle")
 
     threading.Thread(target=_run, daemon=True).start()

@@ -44,7 +44,7 @@ def test_speech_carries_emotion_to_body_and_not_to_voice(env, tmp_path, monkeypa
     monkeypatch.setattr(avatar, "send", lambda path, data: sent.append((path, data)))
     env.patch("speak", env._saved[0][2])
     env.patch("TTS_CACHE_DIR", str(tmp_path / "tts"))
-    env.patch("LIN_UI", None)
+    env.patch("show_state", lambda *a, **k: None)
     env.patch("_tts_synth_to", lambda path, text: synth.append(text) or open(path, "wb").write(b"x"))
     env.patch("_tts_play", lambda path: None)
     env.patch("_tts_last_end", 0.0)                # інакше наступні тести мікрофона чекають луну

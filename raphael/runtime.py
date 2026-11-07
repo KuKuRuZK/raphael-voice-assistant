@@ -1,5 +1,5 @@
 """
-Спільний стан процесу, потрібний багатьом модулям: вікно (LIN_UI),
+Спільний стан процесу, потрібний багатьом модулям: що Лін зараз робить (LIN_STATE),
 прапорець дії, що сама повідомила про невдачу, маркер свідомого виходу.
 """
 import threading
@@ -7,7 +7,20 @@ import threading
 from raphael import settings as cfg
 
 
-LIN_UI = None   # встановлюється в main()
+# Що Лін зараз робить: idle, listening, thinking, speaking. Показує це тіло на екрані,
+# а vibes не вставляє реплік, поки стан не idle. Колись стан малювало ще окреме
+# вікно з орбом (raphael/ui.py, orb.py), прибране 2026-11-07: його не було видно.
+LIN_STATE = "idle"
+
+
+def show_state(state: str, text: str = ""):
+    """Новий стан з будь-якого потоку. «Говорю» тілу шле сама озвучка, з текстом
+    речення, гучністю й настроєм, тож тут йому лише решта станів."""
+    global LIN_STATE
+    LIN_STATE = state
+    if state != "speaking":
+        from raphael import avatar          # avatar тягне llm і vibes: не на верху файлу
+        avatar.mind(state, text)
 
 # Назва гри, поки вона йде (ставить raphael.avatar), інакше None. Від неї
 # залежить мозок: у грі хмарна модель, поза грою локальна (llm.main_model).

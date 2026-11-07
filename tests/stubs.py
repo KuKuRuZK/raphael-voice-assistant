@@ -54,8 +54,5 @@ def install():
     _module("pyautogui", FAILSAFE=True, hotkey=lambda *k: None, press=lambda k: None,
             screenshot=_Any)
     _module("pystray", Icon=_Any, Menu=_Any, MenuItem=_Any)
-    _module("tkinter", Tk=_Any, Toplevel=_Any, Frame=_Any, Label=_Any, Canvas=_Any,
-            StringVar=_Any)
-    _module("tkinter.messagebox", showwarning=lambda *a, **k: None)
     _module("edge_tts", Communicate=_Communicate)
     _module("groq", Groq=_Any)

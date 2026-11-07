@@ -185,7 +185,7 @@ def test_listen_discards_audio_overlapping_speech(env, lin):
     real_speak = env._saved[0][2]                     # справжній speak до підміни
     env.patch("speak", real_speak)
     env.patch("_tts_play", lambda path: time.sleep(0.3))
-    env.patch("LIN_UI", None)
+    env.patch("show_state", lambda *a, **k: None)
     env.patch("_mic_calibrated", True)
     sr = env.get("sr")
 
@@ -224,7 +224,7 @@ def test_tts_cache_synthesizes_once(env, tmp_path):
     env.patch("speak", real_speak)
     env.patch("TTS_CACHE_DIR", str(tmp_path / "tts"))
     env.patch("_tts_play", lambda path: None)
-    env.patch("LIN_UI", None)
+    env.patch("show_state", lambda *a, **k: None)
     synth = []
     env.patch("_tts_synth_to", lambda path, text: (synth.append(text), open(path, "wb").write(b"x")))
     real_speak("Слухаю.")

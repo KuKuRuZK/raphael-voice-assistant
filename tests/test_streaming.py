@@ -32,7 +32,7 @@ def audio(env, tmp_path):
     real_speak = env._saved[0][2]
     env.patch("speak", real_speak)
     env.patch("TTS_CACHE_DIR", str(tmp_path / "tts"))
-    env.patch("LIN_UI", None)
+    env.patch("show_state", lambda *a, **k: None)
     events = []
 
     def synth(path, text):

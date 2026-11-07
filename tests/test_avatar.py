@@ -121,7 +121,7 @@ def test_every_spoken_sentence_reaches_the_body(env, sent, tmp_path):
     real_speak = env._saved[0][2]
     env.patch("speak", real_speak)
     env.patch("TTS_CACHE_DIR", str(tmp_path / "tts"))
-    env.patch("LIN_UI", None)
+    env.patch("show_state", lambda *a, **k: None)
     env.patch("_tts_synth_to", lambda path, text: open(path, "wb").write(b"x"))
     env.patch("_tts_play", lambda path: None)
     env.patch("_tts_last_end", 0.0)                # інакше наступні тести мікрофона чекають луну

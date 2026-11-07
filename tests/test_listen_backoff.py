@@ -23,7 +23,7 @@ def test_missing_mic_backs_off_and_logs_once(env, lin, caplog):
 
     env._saved.append((sr, "Microphone", sr.Microphone))
     sr.Microphone = NoMic
-    env.patch("LIN_UI", None)
+    env.patch("show_state", lambda *a, **k: None)
     env.patch("_listen_failures", 0)
     env._saved.append((stt.time, "sleep", stt.time.sleep))
     stt.time.sleep = sleeps.append

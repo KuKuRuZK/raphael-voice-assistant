@@ -303,10 +303,6 @@ VIBE_GAME_EXES = {
 VIBE_GAME_IGNORE = ["wallpaper_engine", "obs studio", "steamworks shared", "steam controller configs",
                     "steamvr", "lossless scaling"]
 
-# Плаваюче вікно-орб зі станом. False: його не видно (стан показує тіло на екрані),
-# лишається трей, а в ньому «Показати вікно» для налагодження.
-UI_WINDOW = True
-
 # ── Аватар: тіло Лін поверх робочого столу (Electron, тека lin_avatar) ──────
 # Мозок шле тілу режим: у грі монітор з вікном гри для неї закритий.
 # AVATAR_DIR: тека аватара, тоді тіло запускається разом з мозком;
@@ -363,7 +359,7 @@ def _load_config():
         "PERSONA_FILE", "TTS_ENGINE", "TTS_HTTP_URL", "TTS_HTTP_MODEL", "TTS_HTTP_VOICE", "TTS_HTTP_SERVER",
         "VIBE_ENABLED", "VIBE_INTERVAL", "VIBE_MAX_PER_HOUR", "VIBE_GAME_EVERY_MIN",
         "VIBE_MUSIC_CHANCE", "VIBE_MUSIC_MIN_GAP_MIN", "VIBE_GAME_EXES", "VIBE_GAME_IGNORE",
-        "AVATAR_ENABLED", "AVATAR_URL", "AVATAR_INTERVAL", "AVATAR_DIR", "UI_WINDOW",
+        "AVATAR_ENABLED", "AVATAR_URL", "AVATAR_INTERVAL", "AVATAR_DIR",
         "BRAIN_LOCAL_MODEL", "BRAIN_FREE_IN_GAME", "BRAIN_PRELOAD", "BRAIN_LOCAL_CONTEXT", "LMS_EXE",
     ]
     applied = []

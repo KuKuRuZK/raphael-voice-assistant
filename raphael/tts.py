@@ -461,8 +461,7 @@ def speak_stream(chunks) -> str:
                         _tts_active.set()
                         playing = True
                     log.debug(f"TTS: '{text[:50]}...' " if len(text) > 50 else f"TTS: '{text}'")
-                    if runtime.LIN_UI:
-                        runtime.LIN_UI.safe_set_state("speaking", text)
+                    runtime.show_state("speaking", text)
                     from raphael import avatar      # тіло: субтитр і рот у такт звуку
                     avatar.mind("speaking", text, path, emo)
                     try:
@@ -484,8 +483,7 @@ def speak_stream(chunks) -> str:
             if playing:
                 _tts_last_end = time.monotonic()
                 _tts_active.clear()
-    if runtime.LIN_UI:
-        runtime.LIN_UI.safe_set_state("idle")
+    runtime.show_state("idle")
     text = " ".join(spoken)
     if text:
         _last_spoken = text   # зберігаємо для "повтори"

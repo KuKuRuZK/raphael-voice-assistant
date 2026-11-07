@@ -278,7 +278,6 @@ def check_mode_change(text: str) -> bool:
         if trigger in t:
             MODE = "dictation"
             log.info("Режим: DICTATION")
-            if runtime.LIN_UI: runtime.LIN_UI.set_mode("dictation")
             tts.speak("Режим диктування. Говори — вставлятиму текст. Скажи 'стоп' щоб завершити.")
             return True
 
@@ -287,7 +286,6 @@ def check_mode_change(text: str) -> bool:
         if trigger in t:
             MODE = "chat"
             log.info("Режим: CHAT")
-            if runtime.LIN_UI: runtime.LIN_UI.set_mode("chat")
             tts.speak("Режим розмови активовано. Говори — я слухаю. Скажи 'стоп' або 'нормальний режим' щоб вийти.")
             return True
 
@@ -296,7 +294,6 @@ def check_mode_change(text: str) -> bool:
         if trigger in t:
             MODE = "normal"
             log.info("Режим: NORMAL (точне)")
-            if runtime.LIN_UI: runtime.LIN_UI.set_mode("normal")
             tts.speak("Ок, виходжу.")
             return True
 
@@ -365,8 +362,7 @@ def process_command(command: str):
             tts.speak(f"Зараз {datetime.now():%H:%M}.")
         else:
             actions.execute_action(f"[ACTION:{instant}:]")
-            if runtime.LIN_UI:
-                runtime.LIN_UI.safe_set_state("idle")    # пауза чи гучність мовчки: не лишати «Думаю»
+            runtime.show_state("idle")    # пауза чи гучність мовчки: не лишати «Думаю»
         return
 
     # Швидкість голосу — тільки якщо це коротка команда (≤ 4 слова)
@@ -553,7 +549,6 @@ def assistant_loop():
                     # раніше «кінець тижня» чи «стопка» теж вимикали диктування
                     if vr.is_dictation_exit(text):
                         MODE = "normal"
-                        if runtime.LIN_UI: runtime.LIN_UI.set_mode("normal")
                         tts.speak("Диктування зупинено.")
                         log.info("Режим: NORMAL (dictation exit)")
                         continue
@@ -567,7 +562,7 @@ def assistant_loop():
                     time.sleep(0.25)   # чекаємо завершення вставки
                     _pc.copy(_saved)
                     log.info(f"Dictation: '{result[:60]}'")
-                    if runtime.LIN_UI: runtime.LIN_UI.safe_set_state("listening", result[:50])
+                    runtime.show_state("listening", result[:50])
                     continue
 
                 # ── CHAT MODE: слухаємо без wake word ──
@@ -594,8 +589,7 @@ def assistant_loop():
                     log.info(f"Почула фразу без імені (перше слово «{first}»)")
                     continue
                 command = wake[1]
-                if runtime.LIN_UI:
-                    runtime.LIN_UI.safe_set_state("thinking", command or text)
+                runtime.show_state("thinking", command or text)
 
                 # Перевірка зміни режиму прямо з wake word фрази
                 if check_mode_change(command):

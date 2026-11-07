@@ -75,6 +75,7 @@ def env(lin, tmp_path):
     e.patch("USAGE_PATH", str(tmp_path / "usage.json"))
     e.patch("DIARY_DIR", str(tmp_path / "diary"))
     e.patch("_state", None)
+    e.patch("LIN_STATE", "idle")             # стан Лін між тестами не переходить
     e.patch("_notes_cache", [])
     e.patch("_notes_cache_time", 0.0)
     e.patch("AVATAR_ENABLED", False)        # тести не говорять зі справжнім тілом на екрані

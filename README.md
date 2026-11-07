@@ -7,8 +7,6 @@ vault. Runs in the background with a watchdog, no console windows.
 
 Personal project, built and used daily.
 
-![orb](orb_preview.png)
-
 ## What it does
 
 | | |

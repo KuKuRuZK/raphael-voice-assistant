@@ -41,7 +41,6 @@
   "WAKE_ENGINE": "whisper",
   "BRAIN_LOCAL_MODEL": "lmstudio:google/gemma-4-26b-a4b-qat",
   "AVATAR_DIR": "C:\\AI\\projects\\lin_avatar",
-  "UI_WINDOW": false,
   "TTS_ENGINE": "http",
   "TTS_HTTP_VOICE": "Анастасія Павленко",
   "TTS_HTTP_SERVER": ["C:\\AI\\tts\\holos\\Scripts\\pythonw.exe", "C:\\AI\\tts\\lin_voice_server.py"]
