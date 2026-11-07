@@ -1,0 +1,29 @@
+# Лін у хмарі: хаб Telegram на сервері (cloud/hub.py).
+# Встановлення: sudo cp cloud/lin-cloud.service /etc/systemd/system/ && sudo systemctl enable --now lin-cloud
+# Лог: journalctl -u lin-cloud -f
+[Unit]
+Description=Lin in the cloud: Telegram hub, answers while the PC is off
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=lin
+Group=lin
+WorkingDirectory=/home/lin/app
+Environment=LIN_SECRETS_PATH=/home/lin/data/secrets.json
+Environment=LIN_DATA=/home/lin/data
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/lin/venv/bin/python -m cloud.hub
+Restart=always
+RestartSec=5
+
+# Код належить root і для служби лише на читання; писати можна тільки в data
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/lin/data
+PrivateTmp=true
+MemoryMax=400M
+
+[Install]
+WantedBy=multi-user.target

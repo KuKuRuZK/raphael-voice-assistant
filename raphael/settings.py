@@ -124,6 +124,14 @@ TELEGRAM_BOT_TOKEN = _secret("TELEGRAM_BOT_TOKEN")
 # @userinfobot). Решту бот мовчки ігнорує. Лежить у secrets.json, бо репозиторій
 # публічний, а id однозначно вказує на людину.
 TELEGRAM_ALLOWED_IDS = [int(x) for x in re.findall(r"\d+", _secret("TELEGRAM_ALLOWED_IDS"))]
+# Хаб на сервері (cloud/hub.py): він слухає Telegram цілодобово, а домашня Лін, поки ПК
+# увімкнений, забирає повідомлення в нього через SSH-тунель. Порожньо: бот слухає прямо
+# з дому, як раніше (тоді з вимкненим ПК він мовчить). "lin@адреса" у secrets.json,
+# бо репозиторій публічний. Ключ тунелю: на сервері йому дозволено лише порт хаба.
+CLOUD_SSH = _secret("CLOUD_SSH")
+CLOUD_SSH_KEY = _secret("CLOUD_SSH_KEY") or os.path.join(os.path.expanduser("~"), ".ssh", "lin_cloud_ed25519")
+CLOUD_HUB_PORT = 8790           # хаб слухає на сервері лише 127.0.0.1:8790
+CLOUD_LOCAL_PORT = 18790        # а вдома тунель відкриває його на 127.0.0.1:18790
 
 # ── Gmail ─────────────────────────────────────────────────────────────────────
 # Отримати: console.cloud.google.com → APIs → Gmail API → Credentials → OAuth 2.0

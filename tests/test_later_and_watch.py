@@ -17,7 +17,8 @@ def test_later_stores_the_action(notes, env):
     said = notes.later("30|gmail_unread:")
     n = notes._load_notes()[-1]
     assert n["action"] == "gmail_unread:" and n["text"] == "перевіряю пошту"
-    assert said.startswith("Добре, о ") and "перевіряю пошту" in said
+    # «Добре, о 18:30 ...», а після 23:30 «Добре, завтра о 00:04 ...» (тест падав щоночі)
+    assert said.startswith("Добре, ") and " о " in said and "перевіряю пошту" in said
 
 
 def test_later_accepts_bracket_form(notes):

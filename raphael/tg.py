@@ -43,6 +43,13 @@ class TelegramError(Exception):
         self.description = description
 
 
+def hub_key(token: str = None) -> str:
+    """Ключ запитів домашньої Лін до хаба на сервері (cloud/hub.py): похідний від токена
+    бота, тож окремого секрету не треба, а без токена хаб нікому нічого не віддасть."""
+    import hashlib
+    return hashlib.sha256(("lin-hub:" + (token or cfg.TELEGRAM_BOT_TOKEN)).encode()).hexdigest()
+
+
 def _hide_token(text) -> str:
     """Текст помилки без токена: httpx інколи кладе URL у повідомлення, а з токеном
     будь-хто, хто побачить лог, керуватиме ботом."""

@@ -199,8 +199,80 @@ def run() -> None:
         return
     runtime.REMOTE_SAY, runtime.REMOTE_CONFIRM = say, confirm
     threading.Thread(target=_worker, daemon=True, name="tg-worker").start()
-    log.info(f"Telegram: бот @{me.get('username')} слухає")
-    tg.poll(_inbox.put, _stop, on_button=_on_button)
+    if cfg.CLOUD_SSH:
+        log.info(f"Telegram: бот @{me.get('username')}, повідомлення з хаба на сервері")
+        _pull_from_hub()
+    else:
+        log.info(f"Telegram: бот @{me.get('username')} слухає")
+        tg.poll(_inbox.put, _stop, on_button=_on_button)
+
+
+# ── Хаб на сервері ───────────────────────────────────────────────────────────
+# Telegram слухає хаб (cloud/hub.py) цілодобово. Поки ПК увімкнений, домашня Лін тримає
+# до нього запит через SSH-тунель і забирає свої повідомлення; вимкнувся ПК, і хаб
+# відповідає сам. Тунель відкриває домашня (лише вихідне зʼєднання), ключем, якому на
+# сервері дозволено тільки порт хаба.
+
+def _ssh_exe() -> str:
+    import shutil
+    return shutil.which("ssh") or r"C:\Program Files\Git\usr\bin\ssh.exe"
+
+
+def _open_tunnel():
+    import subprocess
+    cmd = [_ssh_exe(), "-N", "-i", cfg.CLOUD_SSH_KEY,
+           "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "IdentitiesOnly=yes",
+           "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=15",
+           "-L", f"127.0.0.1:{cfg.CLOUD_LOCAL_PORT}:127.0.0.1:{cfg.CLOUD_HUB_PORT}", cfg.CLOUD_SSH]
+    return subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+                            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+
+def _take_from_hub(wait: int = 25) -> list:
+    import httpx
+    r = httpx.get(f"http://127.0.0.1:{cfg.CLOUD_LOCAL_PORT}/home/updates", params={"wait": wait},
+                  headers={"X-Lin-Key": tg.hub_key()}, timeout=wait + 15)
+    r.raise_for_status()
+    return r.json().get("updates", [])
+
+
+def _dispatch(update: dict) -> None:
+    """Оновлення з хаба: та сама обробка, що й з Telegram напряму."""
+    if not tg.is_allowed(update):                # хаб уже перевірив, але свої двері теж замикаємо
+        return
+    if "message" in update:
+        _inbox.put(update["message"])
+    elif "callback_query" in update:
+        _on_button(update["callback_query"])
+
+
+def _pull_from_hub() -> None:
+    tunnel, pause, failures = None, 2, 0
+    while not _stop.is_set():
+        if tunnel is None or tunnel.poll() is not None:
+            if tunnel is not None:
+                err = (tunnel.stderr.read() or b"").decode("utf-8", "replace").strip()[-200:]
+                log.warning(f"Хаб: тунель закрився ({err or 'без пояснень'}), відкриваю знову за {pause} с")
+                _stop.wait(pause)
+                pause = min(pause * 2, 60)
+            tunnel = _open_tunnel()
+            _stop.wait(2)                           # ssh треба мить, щоб підняти порт
+            continue
+        try:
+            updates = _take_from_hub()
+            if failures:
+                log.info("Хаб: звʼязок є")
+            failures, pause = 0, 2
+        except Exception as e:
+            failures += 1
+            if failures in (1, 10) or failures % 100 == 0:
+                log.warning(f"Хаб не відповідає ({failures} раз поспіль): {type(e).__name__}: {e}")
+            _stop.wait(min(2 * failures, 30))
+            continue
+        for update in updates:
+            _dispatch(update)
+    if tunnel is not None and tunnel.poll() is None:
+        tunnel.terminate()
 
 
 def stop() -> None:

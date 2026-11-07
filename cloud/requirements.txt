@@ -1,0 +1,4 @@
+# Лін у хмарі (сервер Linux, ARM теж). Встановлення: /home/lin/venv/bin/pip install -r cloud/requirements.txt
+httpx
+openai
+ddgs        # пошук; без нього серверна Лін чесно скаже, що пошуку нема
