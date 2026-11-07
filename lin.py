@@ -107,7 +107,7 @@ for _noisy in ("PIL", "httpcore", "httpx", "urllib3", "spotipy"):
 import pystray  # noqa: E402
 
 from raphael import (agenda, assistant, avatar, briefing, diary, gmail, hotkeys, llm, monitor,  # noqa: E402
-                     notes, runtime, stt, sysmon, tts, vibes)
+                     notes, runtime, stt, sysmon, tg_lin, tts, vibes)
 
 log = logging.getLogger("Лін")
 
@@ -201,11 +201,13 @@ def main():
     threading.Thread(target=vibes.vibe_loop,       daemon=True).start()
     threading.Thread(target=avatar.avatar_loop,    daemon=True).start()
     threading.Thread(target=tts.start_http_server, daemon=True).start()   # свій голос (TTS_HTTP_SERVER)
+    threading.Thread(target=tg_lin.run, daemon=True).start()              # Лін у Telegram (є токен і id)
 
     # ── Системний трей у фоновому потоці ─────────────────────
     def _run_tray():
         def on_quit(icon, item):
             log.info("Вимкнено з треї")
+            tg_lin.stop()
             avatar.quit_body()                   # Лін вимикається цілком: і мозок, і тіло,
             tts.stop_http_server()               # і голос (інакше лишався й тримав ≈2,5 ГБ),
             llm.local_unload_mine()              # і її модель у LM Studio

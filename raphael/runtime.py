@@ -22,6 +22,27 @@ def show_state(state: str, text: str = ""):
         from raphael import avatar          # avatar тягне llm і vibes: не на верху файлу
         avatar.mind(state, text)
 
+# Де зараз Влад, тобто куди Лін говорить: "voice" (уголос удома) або "telegram"
+# (у чат на телефоні). Повідомлення в Telegram перемикає на telegram, будь-яка
+# голосова команда вдома назад на voice. Тоді все, що Лін каже (відповіді, погода,
+# пошта, нагадування), іде туди, де Влад, а не в порожню кімнату.
+LIN_CHANNEL = "voice"
+TG_CHAT_ID = None        # чат Telegram, куди відповідати (ставить raphael.tg_lin)
+REMOTE_SAY = None        # функція(текст): сказати в Telegram (ставить raphael.tg_lin)
+REMOTE_CONFIRM = None    # функція(питання) → bool: кнопки «Так / Ні» в Telegram
+
+
+def use_channel(channel: str):
+    """Перемкнути, куди Лін говорить ("voice" чи "telegram")."""
+    global LIN_CHANNEL
+    LIN_CHANNEL = channel
+
+
+def remote() -> bool:
+    """Чи говорить Лін зараз у Telegram (і чи бот на звʼязку)."""
+    return LIN_CHANNEL == "telegram" and REMOTE_SAY is not None
+
+
 # Назва гри, поки вона йде (ставить raphael.avatar), інакше None. Від неї
 # залежить мозок: у грі хмарна модель, поза грою локальна (llm.main_model).
 GAME = None

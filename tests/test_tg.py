@@ -196,3 +196,12 @@ def test_poll_stops_when_asked(monkeypatch, allowed):
     stop.set()
     monkeypatch.setattr(tg, "get_updates", lambda *a, **k: pytest.fail("stop уже встановлено"))
     tg.poll(lambda m: None, stop)
+
+
+def test_poll_passes_button_presses(monkeypatch, allowed):
+    stop, pressed = threading.Event(), []
+    press = {"update_id": 12, "callback_query": {"id": "q", "from": {"id": 111}, "data": "abc:yes"}}
+    stranger = {"update_id": 13, "callback_query": {"id": "r", "from": {"id": 999}, "data": "abc:yes"}}
+    fake_updates(monkeypatch, [[press, stranger]], stop)
+    tg.poll(lambda m: pytest.fail("це кнопка, а не повідомлення"), stop, on_button=pressed.append)
+    assert [c["id"] for c in pressed] == ["q"]                 # чужа кнопка не дійшла

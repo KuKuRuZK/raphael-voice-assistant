@@ -89,6 +89,23 @@ def _is_noise(text: str) -> bool:
     return False
 
 
+def transcribe_file(data: bytes, name: str = "voice.ogg", seconds: float = 0) -> str:
+    """Розпізнати готовий аудіофайл через Groq Whisper: голосове з Telegram (ogg/opus
+    Whisper приймає як є). Без фільтра шуму: голосове надсилають свідомо, і порожнього
+    там не буває. Помилка (нема мережі, ліміт) → виняток, хай бот скаже, що не вийшло."""
+    import io
+    result = client.audio.transcriptions.create(
+        file=(name, io.BytesIO(data)),
+        model="whisper-large-v3-turbo",
+        language="uk",
+        response_format="text",
+        prompt=_WHISPER_PROMPT,
+        temperature=0.0,
+    )
+    usage.record("groq:whisper-large-v3-turbo", seconds=seconds)
+    return (result or "").strip()
+
+
 def _transcribe_whisper(audio) -> str:
     """Groq Whisper — набагато краща розпізнавання української ніж Google STT."""
     try:

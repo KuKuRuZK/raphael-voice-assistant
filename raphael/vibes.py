@@ -80,7 +80,8 @@ def context() -> str:
 def _can_talk() -> bool:
     if not cfg.VIBE_ENABLED or timers.FOCUS_ACTIVE or tts._tts_active.is_set():
         return False
-    if runtime.LIN_STATE != "idle":
+    if runtime.LIN_STATE != "idle" or runtime.LIN_CHANNEL == "telegram":
+        # Зайнята, або Влад не вдома: коментарі про гру й музику в телефон не шлемо
         return False
     now = time.time()
     _vibe["said"] = [t for t in _vibe["said"] if now - t < 3600]

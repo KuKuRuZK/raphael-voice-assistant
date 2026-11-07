@@ -432,6 +432,14 @@ def speak_stream(chunks) -> str:
     викликав, щоб той міг сказати «не вдалося».
     """
     global _last_spoken, _tts_epoch, _tts_last_end
+    if runtime.remote():
+        # Влад пише з телефона: те саме, що сказала б уголос, іде в Telegram одним
+        # повідомленням (кімната вдома порожня, озвучувати нікому)
+        text = "".join(chunks).strip()
+        if text:
+            runtime.REMOTE_SAY(text)
+            _last_spoken = text
+        return text
     _tts_stop.clear()
     spoken, failure = [], []
     ready = queue.Queue(maxsize=2)      # синтез щонайбільше на 2 речення наперед

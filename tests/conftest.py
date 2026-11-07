@@ -76,6 +76,9 @@ def env(lin, tmp_path):
     e.patch("DIARY_DIR", str(tmp_path / "diary"))
     e.patch("_state", None)
     e.patch("LIN_STATE", "idle")             # стан Лін між тестами не переходить
+    e.patch("LIN_CHANNEL", "voice")          # і канал: Лін говорить уголос, а не в Telegram
+    e.patch("REMOTE_SAY", None)
+    e.patch("REMOTE_CONFIRM", None)
     e.patch("_notes_cache", [])
     e.patch("_notes_cache_time", 0.0)
     e.patch("AVATAR_ENABLED", False)        # тести не говорять зі справжнім тілом на екрані

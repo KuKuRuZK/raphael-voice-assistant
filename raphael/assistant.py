@@ -72,6 +72,11 @@ _NO_WORDS  = {"ні", "нє", "нєа", "відміна", "скасуй", "ст�
 
 
 def _confirm(question: str, extra_yes=()) -> bool:
+    if runtime.remote() and runtime.REMOTE_CONFIRM:
+        # З телефона «так» не скажеш у мікрофон: кнопки «Так / Ні» в Telegram
+        ok = runtime.REMOTE_CONFIRM(question.replace(" Скажи так або ні.", ""))
+        log.info(f"Підтвердження в Telegram «{question}» → {'так' if ok else 'ні'}")
+        return ok
     tts.speak(question)
     ans = stt.listen(timeout=8, phrase_limit=5) or ""
     words = set(re.sub(r"[^\w\s']", " ", ans.lower()).split())
@@ -328,9 +333,11 @@ def _without_name(text: str) -> str:
     return (wake[1] if wake else "") or text
 
 
-def process_command(command: str):
-    """Обробляє команду і відповідає."""
-    log.info(f"Команда: '{command}'")
+def process_command(command: str, channel: str = "voice"):
+    """Обробляє команду і відповідає туди, звідки вона прийшла: channel "voice"
+    (мікрофон удома) чи "telegram" (raphael.tg_lin)."""
+    runtime.use_channel(channel)
+    log.info(f"Команда ({channel}): '{command}'")
     print(f"\n  Ви:  {command}")
 
     # ── Швидкі відповіді без Groq ────────────────────────────
@@ -589,6 +596,7 @@ def assistant_loop():
                     log.info(f"Почула фразу без імені (перше слово «{first}»)")
                     continue
                 command = wake[1]
+                runtime.use_channel("voice")       # Влад удома: «Слухаю» і відповідь уголос
                 runtime.show_state("thinking", command or text)
 
                 # Перевірка зміни режиму прямо з wake word фрази

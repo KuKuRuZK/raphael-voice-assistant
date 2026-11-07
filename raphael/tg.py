@@ -15,10 +15,9 @@ Telegram для Лін: тонкий клієнт Bot API, без сторонн
 - Бот не може написати першим: людина має натиснути Start у чаті з ним.
 - Одне повідомлення не довше за 4096 символів.
 
-Частини з позначкою ЗАВДАННЯ пише Влад, тести на них у tests/test_tg.py:
-    python -m pytest tests/test_tg.py -q
-Коли всі зелені, перший бот (повторює, що йому пишуть):
-    python -m raphael.tg
+Тести: python -m pytest tests/test_tg.py -q
+Перший бот (повторює, що йому пишуть): python -m raphael.tg
+Лін у Telegram (мозок, голосові, кнопки) живе в raphael/tg_lin.py.
 """
 import logging
 import threading
@@ -29,6 +28,7 @@ from raphael import settings as cfg
 log = logging.getLogger("Лін")
 
 API_URL = "https://api.telegram.org/bot{token}/{method}"
+FILE_URL = "https://api.telegram.org/file/bot{token}/{path}"
 MAX_TEXT = 4096         # найдовше повідомлення, яке приймає Telegram
 POLL_TIMEOUT = 30       # скільки секунд getUpdates чекає на нові повідомлення
 BACKOFF_MAX = 60        # найдовша пауза між спробами, коли мережа лежить
@@ -43,85 +43,145 @@ class TelegramError(Exception):
         self.description = description
 
 
-# ── ЗАВДАННЯ 1: розмова з Bot API ────────────────────────────────────────────
+def _hide_token(text) -> str:
+    """Текст помилки без токена: httpx інколи кладе URL у повідомлення, а з токеном
+    будь-хто, хто побачить лог, керуватиме ботом."""
+    text = str(text)
+    return text.replace(cfg.TELEGRAM_BOT_TOKEN, "<токен>") if cfg.TELEGRAM_BOT_TOKEN else text
+
+
+# ── Розмова з Bot API ────────────────────────────────────────────────────────
 
 def _http_post(url: str, payload: dict, timeout: float) -> dict:
-    """Єдине місце, де бот ходить у мережу: POST з JSON, повертає розібраний JSON
-    відповіді. Тести підміняють саме цю функцію, тож решта коду мережі не торкається.
-
-    Підказка: httpx уже стоїть (httpx.post(url, json=..., timeout=...)). Telegram на
-    помилки відповідає кодом 400/401/409 і тим самим JSON з "ok": false, тож тіло
-    відповіді треба повернути й тоді, коли статус не 200."""
-    raise NotImplementedError("ЗАВДАННЯ 1")
+    """Єдине місце, де бот ходить у мережу з запитами (тести підміняють саме її).
+    Telegram на помилки відповідає 400/401/409 з тим самим JSON ("ok": false), тож
+    тіло повертаємо за будь-якого статусу."""
+    import httpx
+    return httpx.post(url, json=payload, timeout=timeout).json()
 
 
-def api(method: str, timeout: float = 10, **params):
-    """Викликати метод Bot API і повернути його "result".
+def _http_get(url: str, timeout: float) -> bytes:
+    """Завантажити файл (голосове) з серверів Telegram."""
+    import httpx
+    r = httpx.get(url, timeout=timeout)
+    r.raise_for_status()
+    return r.content
 
-    - URL з API_URL і cfg.TELEGRAM_BOT_TOKEN;
-    - параметри зі значенням None не надсилати взагалі (Telegram на null у деяких
-      полях відповідає 400);
-    - {"ok": false} → TelegramError(error_code, description)."""
-    raise NotImplementedError("ЗАВДАННЯ 1")
+
+def api(method: str, http_timeout: float = 10, **params):
+    """Викликати метод Bot API і повернути його "result". Параметри зі значенням None
+    не надсилаються (Telegram на null у деяких полях відповідає 400), а {"ok": false}
+    стає TelegramError. http_timeout названо так, щоб не зіткнутись із параметром
+    timeout самого getUpdates."""
+    reply = _http_post(API_URL.format(token=cfg.TELEGRAM_BOT_TOKEN, method=method),
+                       {k: v for k, v in params.items() if v is not None}, http_timeout)
+    if not reply.get("ok"):
+        raise TelegramError(reply.get("error_code", 0), reply.get("description", "без опису"))
+    return reply.get("result")
 
 
 def get_updates(offset: int = None, timeout: int = POLL_TIMEOUT) -> list:
-    """Нові оновлення (getUpdates з long polling).
+    """Нові оновлення (getUpdates з long polling). HTTP чекає на 10 с довше, ніж Telegram
+    законно тримає запит, інакше обривалось би кожне очікування."""
+    return api("getUpdates", http_timeout=timeout + 10, offset=offset, timeout=timeout,
+               allowed_updates=["message", "callback_query"]) or []
 
-    HTTP-таймаут має бути довшим за timeout самого getUpdates: Telegram законно
-    тримає запит timeout секунд, і коротший HTTP-таймаут обривав би кожне очікування."""
-    raise NotImplementedError("ЗАВДАННЯ 1")
+
+def download_file(file_id: str) -> bytes:
+    """Вміст файлу з повідомлення (голосове, документ) за його file_id."""
+    path = api("getFile", file_id=file_id)["file_path"]
+    return _http_get(FILE_URL.format(token=cfg.TELEGRAM_BOT_TOKEN, path=path), timeout=60)
 
 
-# ── ЗАВДАННЯ 2: довгі відповіді ──────────────────────────────────────────────
+# ── Довгі відповіді ──────────────────────────────────────────────────────────
 
 def split_text(text: str, limit: int = MAX_TEXT) -> list:
-    """Розрізати текст на частини не довші за limit.
+    """Розрізати текст на частини не довші за limit: спершу між абзацами, потім між
+    рядками, потім між словами; посеред слова лише тоді, коли слово довше за limit.
+    Пробіли на межах прибрано, порожніх частин нема, порожній текст → []."""
+    text, parts = (text or "").strip(), []
+    while text:
+        if len(text) <= limit:
+            parts.append(text)
+            break
+        cut = -1
+        for sep in ("\n\n", "\n", " "):
+            cut = text.rfind(sep, 0, limit + 1)
+            if cut > 0:
+                break
+        if cut <= 0:
+            cut = limit                     # одне слово довше за limit: ріжемо по живому
+        parts.append(text[:cut].strip())
+        text = text[cut:].strip()
+    return [p for p in parts if p]
 
-    Різати по-людськи: спершу між абзацами (порожній рядок), потім між рядками,
-    потім між словами; посеред слова лише тоді, коли саме слово довше за limit.
-    Пробіли й переноси на межах частин прибрати, порожніх частин не повертати.
-    Порожній текст → []."""
-    raise NotImplementedError("ЗАВДАННЯ 2")
+
+def send_message(chat_id: int, text: str, **extra) -> None:
+    """Надіслати текст у чат; довгий частинами split_text, по порядку. extra (кнопки)
+    чіпляється до останньої частини."""
+    parts = split_text(text)
+    for i, part in enumerate(parts):
+        api("sendMessage", chat_id=chat_id, text=part, **(extra if i == len(parts) - 1 else {}))
 
 
-def send_message(chat_id: int, text: str) -> None:
-    """Надіслати текст у чат; довгий частинами split_text, по порядку."""
-    raise NotImplementedError("ЗАВДАННЯ 2")
+# ── Головний цикл ────────────────────────────────────────────────────────────
 
+def _author(update: dict):
+    for key in ("message", "callback_query"):
+        who = (update.get(key) or {}).get("from", {}).get("id")
+        if who is not None:
+            return who
+    return None
 
-# ── ЗАВДАННЯ 3: головний цикл ────────────────────────────────────────────────
 
 def is_allowed(update: dict) -> bool:
-    """Чи оновлення від акаунта з cfg.TELEGRAM_ALLOWED_IDS.
-
-    Автор лежить у update["message"]["from"]["id"] (звичайне повідомлення) або в
-    update["callback_query"]["from"]["id"] (натиснута кнопка). Порожній список
-    дозволених означає «нікому»: бот без налаштувань не має відповідати світу."""
-    raise NotImplementedError("ЗАВДАННЯ 3")
+    """Чи оновлення від акаунта з cfg.TELEGRAM_ALLOWED_IDS (повідомлення або натиснута
+    кнопка). Порожній список означає «нікому»: бот без налаштувань світу не відповідає."""
+    who = _author(update)
+    return who is not None and who in cfg.TELEGRAM_ALLOWED_IDS
 
 
-def poll(handle, stop: threading.Event) -> None:
+def poll(handle, stop: threading.Event, on_button=None) -> None:
     """Слухати Telegram, поки не встановлено stop.
 
-    - кожне дозволене оновлення з "message" → handle(update["message"]);
-    - чуже мовчки пропустити (лише запис у лог);
-    - offset завжди просувати далі, навіть якщо handle впав: інакше одне «отруйне»
-      повідомлення поверталося б вічно;
-    - помилка мережі не валить цикл: пауза 1, 2, 4... до BACKOFF_MAX секунд
-      (time.sleep), після вдалого запиту знову з 1."""
-    raise NotImplementedError("ЗАВДАННЯ 3")
+    Дозволене повідомлення → handle(message), натиснута кнопка → on_button(callback_query).
+    Чуже пропускаємо (лише в лог). offset просуваємо завжди, навіть якщо обробник впав:
+    інакше одне «отруйне» повідомлення поверталося б вічно. Помилка мережі цикл не
+    валить: пауза 1, 2, 4... до BACKOFF_MAX секунд, після вдалого запиту знову з 1."""
+    offset, pause = None, 1
+    while not stop.is_set():
+        try:
+            updates = get_updates(offset)
+            pause = 1
+        except Exception as e:
+            log.warning(f"Telegram: {_hide_token(e)}; ще раз за {pause} с")
+            time.sleep(pause)
+            pause = min(pause * 2, BACKOFF_MAX)
+            continue
+        for update in updates:
+            offset = update["update_id"] + 1
+            if not is_allowed(update):
+                log.warning(f"Telegram: чужий акаунт {_author(update)}, ігнорую")
+                continue
+            try:
+                if "message" in update:
+                    handle(update["message"])
+                elif "callback_query" in update and on_button:
+                    on_button(update["callback_query"])
+            except Exception as e:
+                log.error(f"Telegram: обробник впав: {_hide_token(e)}", exc_info=True)
 
 
 # ── Перший бот ───────────────────────────────────────────────────────────────
 
 def _echo(message: dict) -> None:
-    """Повторює текст. Перевірка, що транспорт працює, до підключення мозку Лін."""
+    """Повторює текст. Перевірка, що транспорт працює, без мозку Лін."""
     send_message(message["chat"]["id"], message.get("text") or "Поки розумію лише текст.")
 
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
+    logging.getLogger("httpx").setLevel(logging.WARNING)      # httpx пише URL з токеном
     if not cfg.TELEGRAM_BOT_TOKEN:
         raise SystemExit("Нема TELEGRAM_BOT_TOKEN: додай у secrets.json (див. secrets.example.json)")
     me = api("getMe")
