@@ -71,9 +71,31 @@ def _retry_after(e) -> float:
         return 0.0
 
 
+# Gemini 3 вимагає в історії «підпис думки» до кожного свого виклику інструмента
+# (extra_content.google.thought_signature), а на виклики без підпису відповідає 400 без
+# пояснень. Свої підписи зберігаємо як є, а викликам від іншої моделі (Groq) ставимо
+# документований обхід перевірки. Groq це поле мовчки ігнорує (перевірено 2026-11-08).
+_NO_SIGNATURE = {"google": {"thought_signature": "skip_thought_signature_validator"}}
+# gpt-oss на Groq інколи видає вивід, який Groq не розбирає, і відповідає 400 «Parsing
+# failed» чи «Tool call validation failed»; на повторі зазвичай проходить
+_FLAKY = ("Parsing failed", "failed_generation", "Tool call validation failed")
+
+
+def _for_provider(messages: list, provider: str) -> list:
+    if provider != "gemini":
+        return messages
+    out = []
+    for m in messages:
+        if m.get("tool_calls"):
+            m = {**m, "tool_calls": [c if c.get("extra_content") else {**c, "extra_content": _NO_SIGNATURE}
+                                     for c in m["tool_calls"]]}
+        out.append(m)
+    return out
+
+
 def chat_tools(messages: list, use_tools: bool = True) -> dict:
     """Один крок моделі з інструментами → повідомлення асистента як dict (для історії)."""
-    from openai import RateLimitError
+    from openai import BadRequestError, RateLimitError
     errors = []
     for spec in MODELS:
         provider, _, model = spec.partition(":")
@@ -81,14 +103,12 @@ def chat_tools(messages: list, use_tools: bool = True) -> dict:
             try:
                 kw = {"tools": TOOLS, "tool_choice": "auto"} if use_tools else {}
                 r = brain_mod._client(provider).chat.completions.create(
-                    model=model, messages=messages, max_tokens=1500, temperature=0.3,
+                    model=model, messages=_for_provider(messages, provider), max_tokens=1500, temperature=0.3,
                     **brain_mod._kwargs(model), **kw)
                 m = r.choices[0].message
                 out = {"role": "assistant", "content": m.content or ""}
-                if m.tool_calls:
-                    out["tool_calls"] = [{"id": c.id, "type": "function",
-                                          "function": {"name": c.function.name, "arguments": c.function.arguments}}
-                                         for c in m.tool_calls]
+                if m.tool_calls:                    # як прийшли, разом із підписами Gemini
+                    out["tool_calls"] = [c.model_dump(exclude_none=True) for c in m.tool_calls]
                 return out
             except RateLimitError as e:
                 wait = _retry_after(e) or 20 * (attempt + 1)
@@ -97,8 +117,14 @@ def chat_tools(messages: list, use_tools: bool = True) -> dict:
                     break
                 log.info(f"Агент: {spec} просить зачекати {wait:.0f} с")
                 time.sleep(wait)
+            except BadRequestError as e:
+                if any(f in str(e) for f in _FLAKY) and attempt < 2:
+                    log.info(f"Агент: {spec} видала нерозбірливий крок, ще раз")
+                    continue
+                errors.append(f"{spec}: {type(e).__name__}: {str(e)[:300]}")
+                break
             except Exception as e:
-                errors.append(f"{spec}: {type(e).__name__}: {str(e)[:120]}")
+                errors.append(f"{spec}: {type(e).__name__}: {str(e)[:300]}")
                 break
     raise Unavailable("; ".join(errors) or "жодна модель не відповіла")
 

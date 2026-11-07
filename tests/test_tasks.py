@@ -265,3 +265,38 @@ def test_page_text_without_scripts():
            "<style>p{}</style><p>Наявність: є</p></body></html>"
     text = tools.html_text(html)
     assert "Ціни" in text and "600 €" in text and "evil" not in text and "p{}" not in text
+
+
+# ── Моделі з інструментами: граблі першого живого запуску (2026-11-08) ────────
+
+def test_gemini_gets_signatures_for_calls_it_did_not_make():
+    history = [{"role": "assistant", "content": "", "tool_calls": [
+        {"id": "groq1", "type": "function", "function": {"name": "search", "arguments": "{}"}},
+        {"id": "gem1", "type": "function", "function": {"name": "search", "arguments": "{}"},
+         "extra_content": {"google": {"thought_signature": "справжній"}}}]}]
+    sent = agent_mod._for_provider(history, "gemini")[0]["tool_calls"]
+    assert sent[0]["extra_content"]["google"]["thought_signature"] == "skip_thought_signature_validator"
+    assert sent[1]["extra_content"]["google"]["thought_signature"] == "справжній"
+    assert "extra_content" not in history[0]["tool_calls"][0]                  # збережена історія не змінилась
+    assert agent_mod._for_provider(history, "groq") is history
+
+
+def test_unparsable_step_is_retried(monkeypatch):
+    import httpx
+    from openai import BadRequestError
+    attempts = []
+
+    class Completions:
+        def create(self, **kw):
+            attempts.append(kw["model"])
+            if len(attempts) == 1:
+                raise BadRequestError("Parsing failed. The model generated output that could not be parsed.",
+                                      response=httpx.Response(400, request=httpx.Request("POST", "http://x")), body=None)
+            m = type("M", (), {"content": "Готово.", "tool_calls": None})()
+            return type("R", (), {"choices": [type("C", (), {"message": m})()]})()
+
+    client = type("Client", (), {"chat": type("Chat", (), {"completions": Completions()})()})()
+    monkeypatch.setattr(brain_mod, "_client", lambda provider: client)
+    monkeypatch.setattr(agent_mod, "MODELS", ["groq:openai/gpt-oss-120b"])
+    assert agent_mod.chat_tools([{"role": "user", "content": "x"}])["content"] == "Готово."
+    assert attempts == ["openai/gpt-oss-120b", "openai/gpt-oss-120b"]
