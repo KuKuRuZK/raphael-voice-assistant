@@ -326,6 +326,11 @@ BRAIN_PRELOAD       = True
 # забирав ще ≈1 ГБ відеопамʼяті, якої й так бракує (2026-11-07). gpt-oss із роздумами
 # хотіла більше, але вона вже не основна.
 BRAIN_LOCAL_CONTEXT = 8192
+# Відеопамʼять під локальну модель Лін рахує сама: вільне зараз мінус цей запас (ГБ) на
+# робочий стіл, браузер, шпалери. Що не влазить, лягає на процесор. Якщо вільне не
+# дізналась, кладе на відеокарту BRAIN_LOCAL_GPU_RATIO шарів (Gemma 26B: 0.7 це 21 з 30).
+BRAIN_LOCAL_VRAM_SPARE = 1.0
+BRAIN_LOCAL_GPU_RATIO  = 0.7
 LMS_EXE = os.path.expanduser(r"~\.lmstudio\bin\lms.exe")
 
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")
@@ -360,7 +365,7 @@ def _load_config():
         "VIBE_ENABLED", "VIBE_INTERVAL", "VIBE_MAX_PER_HOUR", "VIBE_GAME_EVERY_MIN",
         "VIBE_MUSIC_CHANCE", "VIBE_MUSIC_MIN_GAP_MIN", "VIBE_GAME_EXES", "VIBE_GAME_IGNORE",
         "AVATAR_ENABLED", "AVATAR_URL", "AVATAR_INTERVAL", "AVATAR_DIR",
-        "BRAIN_LOCAL_MODEL", "BRAIN_FREE_IN_GAME", "BRAIN_PRELOAD", "BRAIN_LOCAL_CONTEXT", "LMS_EXE",
+        "BRAIN_LOCAL_MODEL", "BRAIN_FREE_IN_GAME", "BRAIN_PRELOAD", "BRAIN_LOCAL_CONTEXT", "BRAIN_LOCAL_VRAM_SPARE", "BRAIN_LOCAL_GPU_RATIO", "LMS_EXE",
     ]
     applied = []
     for k in simple:

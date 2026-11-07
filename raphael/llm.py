@@ -771,14 +771,80 @@ def local_unload() -> bool:
     return ok
 
 
-def _lms_load_lean(name: str) -> bool:
-    """Завантажити модель у LM Studio без копії ваг в оперативці.
+def local_unload_mine() -> bool:
+    """Лін вимикають повністю: її модель із відеокарти й памʼяті теж. Лише її, не всі:
+    модель, яку Влад сам відкрив у LM Studio, лишається."""
+    m = cfg.BRAIN_LOCAL_MODEL
+    if m.startswith("lmstudio:"):
+        return _lms("unload", m.split(":", 1)[1], timeout=30)
+    if m.startswith("local:"):
+        try:
+            return _ollama({"model": m.split(":", 1)[1], "keep_alive": 0})
+        except Exception:
+            return False
+    return False
+
+
+def _free_vram():
+    """Скільки виділеної відеопамʼяті вільно зараз, у байтах, або None.
+
+    Обсяг карти з реєстру драйвера, зайняте всіма процесами з лічильника Windows
+    «GPU Adapter Memory». Сам LM Studio на цій AMD-карті вільного не бачить («No live
+    GPU info available»), тому його gpu_strict_vram_cap нічого не обмежував."""
+    import subprocess
+    ps = (r"$t = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e968-e325-11ce-bfc1-08002be10318}\0*'"
+          r" -ErrorAction SilentlyContinue | ForEach-Object { $_.'HardwareInformation.qwMemorySize' } |"
+          r" Measure-Object -Maximum).Maximum;"
+          r" $u = ((Get-Counter '\GPU Adapter Memory(*)\Dedicated Usage' -ErrorAction Stop).CounterSamples |"
+          r' Measure-Object CookedValue -Maximum).Maximum; "$t $u"')
+    try:
+        out = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True,
+                             text=True, timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        total, used = (int(float(x.replace(",", "."))) for x in out.split()[:2])
+    except Exception as e:
+        log.debug(f"Мозок: вільну відеопамʼять не дізналась: {e}")
+        return None
+    return total - used if total > used > 0 else None
+
+
+def _model_size(name: str):
+    """Розмір моделі LM Studio на диску, з модулем зору (lms ls --json), у байтах, або None."""
+    import subprocess
+    try:
+        out = subprocess.run([cfg.LMS_EXE, "ls", "--json"], capture_output=True, text=True, encoding="utf-8",
+                             errors="replace", timeout=30, creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout
+        return next((m.get("sizeBytes") for m in json.loads(out) if m.get("modelKey") == name), None)
+    except Exception:
+        return None
+
+
+def _gpu_ratio(name: str) -> float:
+    """Яку частку шарів моделі класти на відеокарту: скільки влазить у вільну відеопамʼять.
+
+    Уся Gemma 26B з контекстом це 17,5 ГБ, а карта 16 ГБ, і ще ≈3 ГБ тримають робочий
+    стіл, Steam, шпалери, тіло Лін. З усіма шарами на GPU вона падала на першому ж запиті
+    (2026-11-07 після перезавантаження), а наступний запит LM Studio виконував сам, з
+    власними налаштуваннями: копія ваг в оперативці, і RAM забивалась. Решта шарів
+    лягає на процесор і бере оперативки рівно стільки, скільки важить."""
+    free, size = _free_vram(), _model_size(name)
+    if not free or not size:
+        log.info(f"Мозок: вільну відеопамʼять чи розмір {name} не знаю, на відеокарту {cfg.BRAIN_LOCAL_GPU_RATIO:.0%}")
+        return cfg.BRAIN_LOCAL_GPU_RATIO
+    context = 1.5e9 * cfg.BRAIN_LOCAL_CONTEXT / 8192          # кеш контексту й робочі буфери
+    ratio = round(max(0.1, min(1.0, (free - cfg.BRAIN_LOCAL_VRAM_SPARE * 1e9 - context) / size)), 2)
+    log.info(f"Мозок: на відеокарту {ratio:.0%} шарів {name} (вільно {free / 1e9:.1f} ГБ, "
+             f"модель {size / 1e9:.1f} ГБ, запас {cfg.BRAIN_LOCAL_VRAM_SPARE} ГБ)")
+    return ratio
+
+
+def _lms_load_lean(name: str, ratio: float) -> bool:
+    """Завантажити модель у LM Studio без копії ваг в оперативці, ratio шарів на відеокарті.
 
     За замовчуванням LM Studio тримає ваги ще й у RAM (keepModelInMemory, mmap), навіть
     коли модель на відеокарті: gpt-oss-20b займала 12-14 ГБ оперативки, і з голосом та
     іграми памʼять доходила до 98 %. Без цього та сама модель забирає ≈4 ГБ (заміри
-    2026-11-03: зайнято 25 → 15 ГБ), а Gemma 26B вміщається з 18 ГБ. Ці налаштування
-    є лише в SDK (pip lmstudio), `lms load` їх не має. Нема SDK → False, і вантажить CLI."""
+    2026-11-03: зайнято 25 → 15 ГБ). Ці налаштування є лише в SDK (pip lmstudio),
+    `lms load` їх не має. Нема SDK → False, і вантажить CLI."""
     try:
         import lmstudio
         from lmstudio import LlmLoadModelConfig
@@ -787,13 +853,11 @@ def _lms_load_lean(name: str) -> bool:
     try:
         with lmstudio.Client() as client:
             # ttl=None: інакше SDK вивантажує модель за годину простою, а наступний
-            # запит LM Studio завантажує сам, уже з копією в оперативці
-            # gpu_strict_vram_cap: шари, що не влазять у виділену відеопамʼять, лягають на
-            # процесор, а не переливаються в «спільну» памʼять відеокарти. З переливом
-            # Gemma 26B (16 ГБ ваг на 16 ГБ карті) 2026-11-07 впала за пів хвилини після
-            # старту; з межею тримається, RAM 18,6 ГБ на все, 94 токени на секунду
+            # запит LM Studio завантажує сам, уже з копією в оперативці.
+            # gpu_strict_vram_cap лишається на випадок, коли LM Studio колись побачить
+            # вільну відеопамʼять; зараз межу задає ratio (_gpu_ratio)
             client.llm.load_new_instance(name, ttl=None, config=LlmLoadModelConfig(
-                gpu={"ratio": 1.0}, gpu_strict_vram_cap=True, context_length=cfg.BRAIN_LOCAL_CONTEXT,
+                gpu={"ratio": ratio}, gpu_strict_vram_cap=True, context_length=cfg.BRAIN_LOCAL_CONTEXT,
                 keep_model_in_memory=False, try_mmap=False))
         return True
     except Exception as e:
@@ -849,8 +913,11 @@ def local_preload() -> bool:
         if name in ps:
             return True                              # уже в памʼяті: друга копія не потрібна
         # Один слот: Лін питає по одному, а кожен зайвий слот тримає свій кеш контексту (≈0,3 ГБ)
-        ok = _lms("server", "start", timeout=60) and (_lms_load_lean(name) or _lms(
-            "load", name, "-c", str(cfg.BRAIN_LOCAL_CONTEXT), "--gpu", "max", "--parallel", "1", "-y", timeout=300))
+        ok = _lms("server", "start", timeout=60)
+        if ok:
+            ratio = _gpu_ratio(name)
+            ok = _lms_load_lean(name, ratio) or _lms("load", name, "-c", str(cfg.BRAIN_LOCAL_CONTEXT), "--gpu",
+                                                     str(ratio), "--parallel", "1", "-y", timeout=300)
     elif m.startswith("local:"):
         ok = _ollama({"model": m.split(":", 1)[1], "keep_alive": "30m"})
     else:

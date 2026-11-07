@@ -79,7 +79,7 @@ def test_preload_loads_with_context(brain, monkeypatch, env):
     monkeypatch.setattr(brain, "_lms", lambda *a, **k: calls.append(a) or True)
     assert brain.local_preload() is True
     assert calls == [("server", "start"),
-                     ("load", "google/gemma-4-26b-a4b-qat", "-c", str(env.get("BRAIN_LOCAL_CONTEXT")), "--gpu", "max",
+                     ("load", "google/gemma-4-26b-a4b-qat", "-c", str(env.get("BRAIN_LOCAL_CONTEXT")), "--gpu", "0.7",
                       "--parallel", "1", "-y")]
 
 
@@ -180,3 +180,17 @@ def test_local_talk_reply_is_spoken_without_body_tag(brain, env, monkeypatch):
     env.patch("AVATAR_ENABLED", False)
     assistant.ask_lin("як справи?")
     assert assistant.history[-1]["content"] == "[EMO:smug] Та норм усе."
+
+
+
+def test_gpu_share_fits_free_video_memory(brain, env, monkeypatch):
+    """Gemma 26B (15,6 ГБ з модулем зору) на 16-гіговій карті, де ≈3 ГБ уже зайнято:
+    на відеокарту лише стільки шарів, скільки влазить, з запасом, а не всі (падала)."""
+    gpu_ratio = next(v for m, n, v in env._saved if n == "_gpu_ratio")     # conftest ставить заглушку
+    monkeypatch.setattr(brain, "_model_size", lambda name: 15.63e9)
+    monkeypatch.setattr(brain, "_free_vram", lambda: 13.9e9)
+    assert 0.65 <= gpu_ratio("google/gemma-4-26b-a4b-qat") <= 0.75      # (13,9 - 1 запас - 1,5 контекст) / 15,6
+    monkeypatch.setattr(brain, "_free_vram", lambda: 40e9)
+    assert gpu_ratio("google/gemma-4-26b-a4b-qat") == 1.0                # велика карта: усе на відеокарту
+    monkeypatch.setattr(brain, "_free_vram", lambda: None)
+    assert gpu_ratio("google/gemma-4-26b-a4b-qat") == env.get("BRAIN_LOCAL_GPU_RATIO")

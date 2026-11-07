@@ -83,7 +83,8 @@ def env(lin, tmp_path):
     # і той сам вантажив Gemma на 15 ГБ поруч із робочою моделлю (2026-11-03)
     e.patch("_warm_up", lambda model: None)
     # і не вантажать моделей через SDK LM Studio: так тест завантажив другу Gemma (2026-11-03)
-    e.patch("_lms_load_lean", lambda name: False)
+    e.patch("_lms_load_lean", lambda name, ratio: False)
+    e.patch("_gpu_ratio", lambda name: 0.7)          # без PowerShell і lms ls у тестах
     e.patch("_local_ready", lambda model: True)     # без запитів до справжнього LM Studio
     e.patch("http_server_up", lambda timeout=1.0: True)   # і до справжнього сервера голосу
     # Запасна модель Groq і окрема модель для реплік: лише в тестах про них (test_rate_limit)

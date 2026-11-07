@@ -261,6 +261,29 @@ def start_http_server() -> bool:
         return True
 
 
+def stop_http_server() -> int:
+    """Вимкнути свій TTS-сервер, коли Лін вимикають повністю. Скільки процесів зупинено.
+
+    Без цього сервер лишався жити сам по собі: 2026-11-07 Лін вимкнули з трею, а голос
+    ще годину тримав ≈2,5 ГБ оперативки (≈4 ГБ виділено). Шукаємо за скриптом у командному
+    рядку: лаунчер venv (pythonw з holos) запускає справжній Python окремим процесом."""
+    if not cfg.TTS_HTTP_SERVER:
+        return 0
+    import psutil
+    script = os.path.normcase(os.path.abspath(cfg.TTS_HTTP_SERVER[-1]))
+    stopped = 0
+    for proc in psutil.process_iter(["cmdline"]):
+        try:
+            args = proc.info["cmdline"] or []
+            if proc.pid != os.getpid() and any(os.path.normcase(os.path.abspath(a)) == script for a in args[1:]):
+                proc.kill()
+                stopped += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied, OSError, ValueError):
+            pass
+    log.info(f"TTS-сервер вимкнено ({stopped} процесів)")
+    return stopped
+
+
 def wait_own_voice(timeout: float = None) -> bool:
     """Дочекатись свого голосу: запустити сервер, якщо він лежить, і чекати, поки слухає.
     True і тоді, коли свого сервера в налаштуваннях нема (чекати нічого)."""

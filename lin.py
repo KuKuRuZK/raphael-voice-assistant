@@ -106,7 +106,7 @@ for _noisy in ("PIL", "httpcore", "httpx", "urllib3", "spotipy"):
 
 import pystray  # noqa: E402
 
-from raphael import (agenda, assistant, avatar, briefing, diary, gmail, hotkeys, monitor,  # noqa: E402
+from raphael import (agenda, assistant, avatar, briefing, diary, gmail, hotkeys, llm, monitor,  # noqa: E402
                      notes, runtime, stt, sysmon, tts, vibes)
 
 log = logging.getLogger("Лін")
@@ -206,7 +206,9 @@ def main():
     def _run_tray():
         def on_quit(icon, item):
             log.info("Вимкнено з треї")
-            avatar.quit_body()                   # Лін вимикається цілком: і мозок, і тіло
+            avatar.quit_body()                   # Лін вимикається цілком: і мозок, і тіло,
+            tts.stop_http_server()               # і голос (інакше лишався й тримав ≈2,5 ГБ),
+            llm.local_unload_mine()              # і її модель у LM Studio
             notes.update_memory_after_session(assistant.history)
             icon.stop()
             runtime._mark_stop()
