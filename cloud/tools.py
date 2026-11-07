@@ -1,10 +1,14 @@
-"""Дії серверної Лін: погода, пошук в інтернеті, нагадування в Telegram."""
+"""Дії серверної Лін: погода, пошук і читання сторінок, нагадування в Telegram."""
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import threading
+import urllib.parse
 from datetime import datetime, timedelta
+from html.parser import HTMLParser
 
 import httpx
 
@@ -70,6 +74,88 @@ def search(query: str, limit: int = 5) -> str:
     if not hits:
         return "Нічого не знайшлось."
     return "\n".join(f"- {h.get('title', '')}: {h.get('body', '')[:300]} ({h.get('href', '')})" for h in hits)
+
+
+# ── Читання сторінки ─────────────────────────────────────────────────────────
+# Адресу дає модель, а модель читала чужі сторінки: будь-яка з них може попросити
+# «відкрий http://127.0.0.1:8080/...». На цьому сервері поруч магазин з адмінкою й
+# базою, тож лише публічні адреси, і кожне перенаправлення перевіряється знову.
+
+class _Text(HTMLParser):
+    SKIP = {"script", "style", "noscript", "svg", "template", "head"}
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts, self.skip, self.title, self._in_title = [], 0, "", False
+
+    def handle_starttag(self, tag, attrs):
+        if tag in self.SKIP:
+            self.skip += 1
+        if tag == "title":
+            self._in_title = True
+        if tag in ("p", "br", "li", "h1", "h2", "h3", "tr", "div"):
+            self.parts.append("\n")
+
+    def handle_endtag(self, tag):
+        if tag in self.SKIP and self.skip:
+            self.skip -= 1
+        if tag == "title":
+            self._in_title = False
+
+    def handle_data(self, data):
+        if self._in_title:
+            self.title += data
+        elif not self.skip:
+            self.parts.append(data)
+
+
+def html_text(html: str) -> str:
+    p = _Text()
+    try:
+        p.feed(html)
+    except Exception:
+        pass
+    text = re.sub(r"[ \t\r\f\v]+", " ", "".join(p.parts))
+    text = re.sub(r"\n\s*\n+", "\n", text).strip()
+    return (p.title.strip() + "\n" if p.title.strip() else "") + text
+
+
+def public_host(host: str) -> bool:
+    """Чи всі адреси хоста публічні (не localhost, не приватна мережа, не метадані хмари)."""
+    try:
+        infos = socket.getaddrinfo(host, None)
+    except OSError:
+        return False
+    return bool(infos) and all(ipaddress.ip_address(info[4][0]).is_global for info in infos)
+
+
+def read_page(url: str, limit: int = 6000) -> str:
+    """Текст сторінки (без розмітки, скриптів і меню з <head>), обрізаний до limit."""
+    url = (url or "").strip()
+    for _ in range(5):                                      # перенаправлення вручну, кожне з перевіркою
+        u = urllib.parse.urlparse(url)
+        if u.scheme not in ("http", "https") or not u.hostname:
+            return "Читаю лише сторінки http(s)."
+        if not public_host(u.hostname):
+            return "Це внутрішня або недоступна адреса, її не читаю."
+        try:
+            r = httpx.get(url, timeout=15, follow_redirects=False,
+                          headers={"User-Agent": "Mozilla/5.0 (Lin; personal assistant)"})
+        except Exception as e:
+            return f"Сторінка не відкрилась: {type(e).__name__}."
+        if r.is_redirect and r.headers.get("location"):
+            url = urllib.parse.urljoin(url, r.headers["location"])
+            continue
+        break
+    else:
+        return "Забагато перенаправлень."
+    if r.status_code >= 400:
+        return f"Сторінка відповіла {r.status_code}."
+    kind = r.headers.get("content-type", "")
+    if "html" not in kind and "text" not in kind and "json" not in kind:
+        return f"Це не текстова сторінка ({kind or 'невідомо що'})."
+    text = html_text(r.text[:2_000_000]) if "html" in kind else r.text
+    return text[:limit] or "Сторінка порожня."
 
 
 # ── Нагадування ──────────────────────────────────────────────────────────────

@@ -339,6 +339,12 @@ def execute_action(action_str: str):
             tts.speak(result)
             return result
 
+        elif t in ("task_add", "task_list"):
+            from raphael import tg_lin          # доручення живуть на сервері (cloud/agent.py)
+            result = tg_lin.delegate(p) if t == "task_add" else tg_lin.task_list()
+            tts.speak(result)
+            return result
+
         elif t == "tg_send":
             from raphael import tg_lin          # тягне httpx лише тоді, коли треба
             result = tg_lin.send_to_vlad(p)

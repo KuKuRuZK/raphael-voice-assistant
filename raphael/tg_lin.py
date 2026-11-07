@@ -260,6 +260,38 @@ def _open_tunnel():
     return proc
 
 
+def _hub(method: str, path: str, payload: dict = None) -> dict:
+    """Запит до хаба на сервері через тунель (доручення). Тунель тримає _pull_from_hub."""
+    import httpx
+    r = httpx.request(method, f"http://127.0.0.1:{cfg.CLOUD_LOCAL_PORT}{path}", json=payload,
+                      headers={"X-Lin-Key": tg.hub_key()}, timeout=15)
+    r.raise_for_status()
+    return r.json()
+
+
+def delegate(goal: str) -> str:
+    """Дія task_add: «Лін, доручаю тобі ...». Справу робить агент на сервері, звіт у Telegram."""
+    if not cfg.CLOUD_SSH:
+        return "Доручення працюють через сервер, а його в мене не налаштовано."
+    try:
+        _hub("POST", "/tasks", {"goal": goal, "source": "voice"})
+    except Exception as e:
+        log.warning(f"Хаб: доручення не передала: {type(e).__name__}: {e}")
+        return "Не достукалась до сервера, доручення не передала."
+    return "Взяла. Зроблю сама на сервері, звіт пришлю в Telegram."
+
+
+def task_list() -> str:
+    """Дія task_list: що там з дорученнями."""
+    if not cfg.CLOUD_SSH:
+        return "Доручень у мене нема: сервер не налаштований."
+    try:
+        return _hub("GET", "/tasks").get("text") or "Доручень нема."
+    except Exception as e:
+        log.warning(f"Хаб: список справ: {type(e).__name__}: {e}")
+        return "Не достукалась до сервера."
+
+
 def _take_from_hub(wait: int = 25) -> list:
     import httpx
     r = httpx.get(f"http://127.0.0.1:{cfg.CLOUD_LOCAL_PORT}/home/updates", params={"wait": wait},

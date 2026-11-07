@@ -104,10 +104,14 @@ def system_prompt() -> str:
         "ДІЇ: один тег у кінці відповіді, коли треба: "
         "[ACTION:weather:місто] погода зараз і на завтра (порожньо: Вільнюс); "
         "[ACTION:search:запит] пошук в інтернеті, коли питають факти, новини, ціни, розклади; "
-        "[ACTION:remind:час|текст] нагадати в Telegram, час: хвилини '30', '18:00', 'завтра 09:00'. "
+        "[ACTION:remind:час|текст] нагадати в Telegram, час: хвилини '30', '18:00', 'завтра 09:00'; "
+        "[ACTION:task:що зробити] доручення: більша справа, яку ти зробиш сама у фоні за кілька хвилин "
+        "(дослідити, порівняти, знайти варіанти) і пришлеш звіт; коли Влад каже 'доручаю', 'розберись', "
+        "'знайди й порівняй'. "
         "На привітання, жарти й звичайну розмову тегів не став. Пиши лише українською, без русизмів. "
         "Приклади: 'яка завтра погода' → [ACTION:weather:]; 'нагадай через годину подзвонити мамі' → "
-        "[ACTION:remind:60|подзвонити мамі]; 'хто виграв вчора' → [ACTION:search:хто виграв вчора]. "
+        "[ACTION:remind:60|подзвонити мамі]; 'хто виграв вчора' → [ACTION:search:хто виграв вчора]; "
+        "'доручаю: порівняй три VPN' → [ACTION:task:порівняти три VPN]. "
         f"Зараз {tools.now():%H:%M, %d.%m.%Y} (Вільнюс)."
     )
 
@@ -115,7 +119,8 @@ def system_prompt() -> str:
 class Brain:
     """Розмова серверної Лін: історія, дії, відповідь текстом."""
 
-    def __init__(self, reminders: "tools.Reminders" = None, history_path: str = None):
+    def __init__(self, reminders: "tools.Reminders" = None, history_path: str = None, on_task=None):
+        self.on_task = on_task          # доручення: хаб ставить справу агенту (cloud/agent.py)
         self.reminders = reminders or tools.Reminders(os.path.join(DATA, "reminders.json"))
         self.history_path = history_path or os.path.join(DATA, "history.json")
         self.history = self._load()
@@ -145,6 +150,8 @@ class Brain:
             return tools.search(param), True
         if kind == "remind":
             return self.reminders.add(param), False
+        if kind == "task" and self.on_task:
+            return self.on_task(param, "telegram"), False
         return "", False
 
     def answer(self, text: str) -> str:
