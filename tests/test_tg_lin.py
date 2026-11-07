@@ -181,3 +181,14 @@ def test_obsidian_plans_are_not_lins_plans(env, lin, monkeypatch):
 def test_tomorrow_weather_is_weather_not_reminder(env, lin):
     from raphael import prompt
     assert "'яка завтра погода'" in prompt.build_system_prompt()
+
+
+def test_screen_from_phone_looks_at_all_monitors(env, lin):
+    """З Telegram активне вікно це сам Telegram: Лін описувала його замість відео на основному (2026-11-07)."""
+    from raphael import pc
+    env.patch("LIN_CHANNEL", "telegram")
+    assert pc._which_monitor("що за відео я дивлюсь") == "all"
+    assert pc._which_monitor("що за відео на основному моніторі") == "primary"
+    assert pc._which_monitor("що на другому моніторі") == "other"
+    env.patch("LIN_CHANNEL", "voice")
+    assert pc._which_monitor("що це за помилка") == "active"          # уголос за компом: вікно, на яке дивиться

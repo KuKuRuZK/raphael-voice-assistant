@@ -353,14 +353,65 @@ def _active_monitor_bbox():
         return None
 
 
-def _capture_screen_b64(max_side: int = 1600, quality: int = 75) -> str:
-    """Знімає монітор з активним вікном, стискає і повертає base64 JPEG.
+def _monitors() -> list:
+    """Усі монітори: [(left, top, right, bottom, основний?)], основний першим."""
+    import ctypes
+    from ctypes import wintypes
+
+    class MONITORINFO(ctypes.Structure):
+        _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
+                    ("rcWork", wintypes.RECT), ("dwFlags", wintypes.DWORD)]
+    user32, found = ctypes.windll.user32, []
+    proc_type = ctypes.WINFUNCTYPE(ctypes.c_int, wintypes.HANDLE, wintypes.HDC,
+                                   ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
+    user32.GetMonitorInfoW.argtypes = [wintypes.HANDLE, ctypes.POINTER(MONITORINFO)]
+
+    def _one(monitor, dc, rect, data):
+        info = MONITORINFO(cbSize=ctypes.sizeof(MONITORINFO))
+        if user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            r = info.rcMonitor
+            found.append((r.left, r.top, r.right, r.bottom, bool(info.dwFlags & 1)))   # MONITORINFOF_PRIMARY
+        return 1
+    user32.EnumDisplayMonitors(None, None, proc_type(_one), 0)
+    return sorted(found, key=lambda m: not m[4])
+
+
+def _which_monitor(question: str = "") -> str:
+    """Що знімати: "primary", "other", "all" чи "active" (монітор з активним вікном).
+
+    Активне вікно годиться, коли Влад говорить уголос за компом. Коли він пише в Telegram,
+    активним буде сам Telegram: 2026-11-07 на «що за відео я дивлюсь на основному моніторі»
+    Лін двічі описала Telegram і LM Studio на другому. Тоді без підказки знімаємо всі."""
+    q = (question or "").lower()
+    if any(w in q for w in ("обидва", "обох", "всі монітор", "усі монітор", "всіх монітор")):
+        return "all"
+    if any(w in q for w in ("основн", "головн", "першому", "перший монітор", "великому")):
+        return "primary"
+    if any(w in q for w in ("другому", "другий монітор", "іншому", "інший монітор", "бічн")):
+        return "other"
+    return "all" if runtime.LIN_CHANNEL == "telegram" else "active"
+
+
+def _capture_screen_b64(max_side: int = 1600, quality: int = 75, which: str = "active") -> str:
+    """Знімає монітор (which, див. _which_monitor), стискає і повертає base64 JPEG.
     1600 по довшій стороні, а не 1280: на 2560 пікселях дрібний текст терміналу
-    інакше розпливався, а «що тут написано» якраз про нього."""
+    інакше розпливався, а «що тут написано» якраз про нього. Усі монітори разом
+    ширші, тож для них 2400."""
     import base64, io
-    bbox = _active_monitor_bbox()
-    if bbox:
-        from PIL import ImageGrab
+    from PIL import ImageGrab
+    bbox = None
+    try:
+        monitors = _monitors()
+        if which == "primary" and monitors:
+            bbox = monitors[0][:4]
+        elif which == "other" and len(monitors) > 1:
+            bbox = monitors[1][:4]
+    except Exception as e:
+        log.debug(f"Монітори: {e}")
+    if which == "all":
+        img = ImageGrab.grab(all_screens=True)
+        max_side = max(max_side, 2400)
+    elif bbox or (bbox := _active_monitor_bbox()):
         img = ImageGrab.grab(bbox=bbox, all_screens=True)
     else:
         img = pyautogui.screenshot()
@@ -380,13 +431,16 @@ def _screen_look(question: str = "") -> None:
         log.warning("Screen look: vision-модель не налаштована")
         tts.speak("Зараз не бачу екран: не налаштована модель із зором.")
         return
+    which = _which_monitor(question)
     try:
-        b64 = _capture_screen_b64()
+        b64 = _capture_screen_b64(which=which)
     except Exception as e:
         log.error(f"Screen look: знімок не вийшов: {e}", exc_info=True)
         tts.speak("Не вдалося зняти екран.")
         return
     prompt = question.strip() or "Що зараз на екрані? Опиши коротко українською, одне-два речення."
+    if which == "all":
+        prompt += " На знімку всі монітори поруч; про вікно Telegram і LM Studio не розповідай, якщо не питають."
     prompt += " Відповідай ТІЛЬКИ українською, без англійської, звичайним текстом без розмітки."
     messages = [{"role": "user", "content": [
         {"type": "text", "text": prompt},
@@ -400,7 +454,7 @@ def _screen_look(question: str = "") -> None:
             if not answer:
                 continue
             answer = re.sub(r"[`*_#]+", "", answer)        # розмітку не зачитуємо
-            log.info(f"Screen look ({model}): '{answer[:100]}'")
+            log.info(f"Screen look ({model}, монітор {which}): '{answer[:100]}'")
             tts.speak(answer)
             return
         except Exception as e:
