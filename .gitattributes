@@ -7,3 +7,6 @@
 *.json  text eol=lf
 *.bat   text eol=crlf
 *.vbs   text eol=crlf
+# Скрипти й служби для сервера Linux: лише LF (інакше bash і systemd бачать зайвий CR)
+*.sh text eol=lf
+*.service text eol=lf

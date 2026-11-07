@@ -6,7 +6,7 @@
 set -euo pipefail
 host="${1:?вкажи ubuntu@адреса-сервера}"
 cd "$(dirname "$0")/.."
-git archive --format=tar HEAD cloud raphael/__init__.py raphael/settings.py raphael/tg.py raphael/emotion.py |
+git -c core.autocrlf=false archive --format=tar HEAD cloud raphael/__init__.py raphael/settings.py raphael/tg.py raphael/emotion.py |
   ssh "$host" 'set -e
     rm -rf /tmp/lin-app && mkdir /tmp/lin-app && tar -x -C /tmp/lin-app
     sudo rsync -a --delete /tmp/lin-app/ /home/lin/app/ && rm -rf /tmp/lin-app
