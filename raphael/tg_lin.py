@@ -11,6 +11,7 @@
 - Відповідає лише акаунтам з TELEGRAM_ALLOWED_IDS (tg.is_allowed).
 """
 import logging
+import os
 import queue
 import threading
 import uuid
@@ -218,14 +219,45 @@ def _ssh_exe() -> str:
     return shutil.which("ssh") or r"C:\Program Files\Git\usr\bin\ssh.exe"
 
 
+_tunnel = []                # процес ssh, що тримає тунель (один)
+
+
+def _kill_stale_tunnels() -> int:
+    """Прибрати тунелі, що лишились від попередньої Лін. ssh живе окремим процесом: Лін
+    вбили чи вона впала, а він висить і тримає порт, і новий тунель уже не відкрити."""
+    import psutil
+    key, stale = os.path.normcase(cfg.CLOUD_SSH_KEY), 0
+    for proc in psutil.process_iter(["name", "cmdline"]):
+        try:
+            args = proc.info["cmdline"] or []
+            if (proc.info["name"] or "").lower().startswith("ssh") and "-L" in args \
+                    and any(os.path.normcase(a) == key for a in args):
+                proc.kill()
+                stale += 1
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            pass
+    if stale:
+        log.info(f"Хаб: прибрала старі тунелі ({stale})")
+    return stale
+
+
+def _close_tunnel() -> None:
+    while _tunnel:
+        proc = _tunnel.pop()
+        if proc.poll() is None:
+            proc.terminate()
+
+
 def _open_tunnel():
     import subprocess
     cmd = [_ssh_exe(), "-N", "-i", cfg.CLOUD_SSH_KEY,
            "-o", "BatchMode=yes", "-o", "ExitOnForwardFailure=yes", "-o", "IdentitiesOnly=yes",
            "-o", "ServerAliveInterval=15", "-o", "ServerAliveCountMax=3", "-o", "ConnectTimeout=15",
            "-L", f"127.0.0.1:{cfg.CLOUD_LOCAL_PORT}:127.0.0.1:{cfg.CLOUD_HUB_PORT}", cfg.CLOUD_SSH]
-    return subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
                             creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    _tunnel.append(proc)
+    return proc
 
 
 def _take_from_hub(wait: int = 25) -> list:
@@ -247,12 +279,14 @@ def _dispatch(update: dict) -> None:
 
 
 def _pull_from_hub() -> None:
+    _kill_stale_tunnels()
     tunnel, pause, failures = None, 2, 0
     while not _stop.is_set():
         if tunnel is None or tunnel.poll() is not None:
             if tunnel is not None:
                 err = (tunnel.stderr.read() or b"").decode("utf-8", "replace").strip()[-200:]
                 log.warning(f"Хаб: тунель закрився ({err or 'без пояснень'}), відкриваю знову за {pause} с")
+                _tunnel.clear()
                 _stop.wait(pause)
                 pause = min(pause * 2, 60)
             tunnel = _open_tunnel()
@@ -271,11 +305,11 @@ def _pull_from_hub() -> None:
             continue
         for update in updates:
             _dispatch(update)
-    if tunnel is not None and tunnel.poll() is None:
-        tunnel.terminate()
+    _close_tunnel()
 
 
 def stop() -> None:
     _stop.set()
+    _close_tunnel()                 # інакше ssh переживе Лін і триматиме порт
     runtime.REMOTE_SAY = runtime.REMOTE_CONFIRM = None
     runtime.use_channel("voice")

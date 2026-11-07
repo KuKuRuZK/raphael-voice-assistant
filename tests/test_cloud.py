@@ -257,3 +257,24 @@ def test_tag_with_spaces_is_still_a_tag(brain):
     answer = b.answer("нагадай через 20 хвилин випити воду")
     assert "ACTION" not in answer and "випити воду" in answer
     assert b.reminders.due(tools.now() + timedelta(minutes=21)) == ["випити воду"]
+
+
+def test_stale_tunnel_from_killed_lin_is_cleared(env, lin, monkeypatch):
+    """ssh-тунель живе окремим процесом: Лін вбили, а він тримав порт (2026-11-07)."""
+    import psutil
+    from raphael import tg_lin
+    key = r"C:\Users\x\.ssh\lin_cloud_ed25519"
+    env.patch("CLOUD_SSH_KEY", key)
+
+    class P:
+        def __init__(self, name, cmdline):
+            self.info, self.killed = {"name": name, "cmdline": cmdline}, False
+
+        def kill(self):
+            self.killed = True
+    ours = P("ssh.exe", ["ssh", "-N", "-i", key, "-L", "127.0.0.1:18790:127.0.0.1:8790", "lin@host"])
+    other_ssh = P("ssh.exe", ["ssh", "ubuntu@host"])                     # Влад сам зайшов на сервер
+    lin_itself = P("pythonw.exe", ["pythonw", "lin.py", "-i", key, "-L"])
+    monkeypatch.setattr(psutil, "process_iter", lambda attrs=None: [ours, other_ssh, lin_itself])
+    assert tg_lin._kill_stale_tunnels() == 1
+    assert ours.killed and not other_ssh.killed and not lin_itself.killed
