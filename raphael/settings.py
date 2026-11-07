@@ -8,6 +8,7 @@
 import json
 import logging
 import os
+import re
 
 log = logging.getLogger("Лін")
 
@@ -115,6 +116,14 @@ SPOTIFY_CLIENT_SECRET = _secret("SPOTIFY_CLIENT_SECRET")
 # Scopes (User Token): channels:history, channels:read, im:history, im:read,
 #                      groups:history, groups:read, search:read, users:read
 SLACK_TOKEN = _secret("SLACK_TOKEN")   # xoxp-... або xoxb-...
+
+# ── Telegram: Лін у телефоні ──────────────────────────────────────────────────
+# Токен бота від @BotFather (/newbot). Це пароль: хто має токен, той і є ботом.
+TELEGRAM_BOT_TOKEN = _secret("TELEGRAM_BOT_TOKEN")
+# Кому бот відповідає: числові id акаунтів Telegram через кому (свій id скаже
+# @userinfobot). Решту бот мовчки ігнорує. Лежить у secrets.json, бо репозиторій
+# публічний, а id однозначно вказує на людину.
+TELEGRAM_ALLOWED_IDS = [int(x) for x in re.findall(r"\d+", _secret("TELEGRAM_ALLOWED_IDS"))]
 
 # ── Gmail ─────────────────────────────────────────────────────────────────────
 # Отримати: console.cloud.google.com → APIs → Gmail API → Credentials → OAuth 2.0
