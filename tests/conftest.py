@@ -83,6 +83,7 @@ def env(lin, tmp_path):
     e.patch("_warm_up", lambda model: None)
     # і не вантажать моделей через SDK LM Studio: так тест завантажив другу Gemma (2026-11-03)
     e.patch("_lms_load_lean", lambda name: False)
+    e.patch("_local_ready", lambda model: True)     # без запитів до справжнього LM Studio
     # Запасна модель Groq і окрема модель для реплік: лише в тестах про них (test_rate_limit)
     e.patch("GROQ_SPARE_MODEL", "")
     e.patch("VIBE_MODEL", "")

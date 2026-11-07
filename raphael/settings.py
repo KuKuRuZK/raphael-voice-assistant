@@ -326,7 +326,10 @@ AVATAR_DIR      = ""
 BRAIN_LOCAL_MODEL   = ""
 BRAIN_FREE_IN_GAME  = True
 BRAIN_PRELOAD       = True
-BRAIN_LOCAL_CONTEXT = 16384    # менше не вистачає великому системному промту
+# 8192: промт ≈4,5 тис. токенів, історія ≈1-2 тис., відповідь до 450. 16384 у Gemma 26B
+# забирав ще ≈1 ГБ відеопамʼяті, якої й так бракує (2026-11-07). gpt-oss із роздумами
+# хотіла більше, але вона вже не основна.
+BRAIN_LOCAL_CONTEXT = 8192
 LMS_EXE = os.path.expanduser(r"~\.lmstudio\bin\lms.exe")
 
 CONFIG_PATH = os.path.join(SCRIPT_DIR, "config.json")

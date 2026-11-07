@@ -6,7 +6,9 @@ import json
 import logging
 import os
 import re
+import threading
 import time
+import urllib.request
 
 from raphael import emotion
 from raphael import runtime
@@ -356,6 +358,8 @@ def _harmony_call(cli, bare: str, messages, **kw):
 
 
 def _llm_call(model: str, messages, **kw):
+    if _is_local(model) and not _local_ready(model):
+        raise RuntimeError(f"{model} не завантажена")
     cli, bare = _llm(model)
     if _is_local(model):
         kw.pop("tools", None)             # локальні моделі функцій часто не вміють
@@ -524,6 +528,8 @@ def llm_stream(model: str, messages, fallback=None, **kw):
     дві різні відповіді підряд. Потік тоді просто обривається винятком.
     """
     def _open(m):
+        if _is_local(m) and not _local_ready(m):
+            raise RuntimeError(f"{m} не завантажена")
         if _is_harmony(m):
             # Потоком через свій шаблон не вийде (final видно лише в кінці),
             # тож одним шматком: локальна відповідає за 1-3 с
@@ -782,13 +788,50 @@ def _lms_load_lean(name: str) -> bool:
         with lmstudio.Client() as client:
             # ttl=None: інакше SDK вивантажує модель за годину простою, а наступний
             # запит LM Studio завантажує сам, уже з копією в оперативці
+            # gpu_strict_vram_cap: шари, що не влазять у виділену відеопамʼять, лягають на
+            # процесор, а не переливаються в «спільну» памʼять відеокарти. З переливом
+            # Gemma 26B (16 ГБ ваг на 16 ГБ карті) 2026-11-07 впала за пів хвилини після
+            # старту; з межею тримається, RAM 18,6 ГБ на все, 94 токени на секунду
             client.llm.load_new_instance(name, ttl=None, config=LlmLoadModelConfig(
-                gpu={"ratio": 1.0}, context_length=cfg.BRAIN_LOCAL_CONTEXT,
+                gpu={"ratio": 1.0}, gpu_strict_vram_cap=True, context_length=cfg.BRAIN_LOCAL_CONTEXT,
                 keep_model_in_memory=False, try_mmap=False))
         return True
     except Exception as e:
         log.warning(f"Мозок: економне завантаження не вдалось ({e}), вантажу як звичайно")
         return False
+
+
+_reloading = threading.Lock()
+
+
+def _local_ready(model: str) -> bool:
+    """Чи модель LM Studio справді завантажена.
+
+    Якщо вона впала чи її вивантажили, запит з її назвою LM Studio виконує сам, завантаживши
+    модель «на льоту» з налаштуваннями за замовчуванням: копія ваг у RAM і частина шарів на
+    процесорі. Так 2026-11-07 після падіння Gemma llama-server зайняв 14,7 ГБ, памʼять дійшла
+    до 88 %, а робочий стіл підвисав. Тепер такий запит не шлемо (відповідає хмара), а
+    модель у фоні вантажимо економно."""
+    if not model.startswith("lmstudio:"):
+        return True
+    name = model.split(":", 1)[1]
+    base = LLM_PROVIDERS["lmstudio"]["base_url"].rsplit("/v1", 1)[0]
+    try:
+        with urllib.request.urlopen(base + "/api/v0/models", timeout=2) as r:
+            state = next((m.get("state") for m in json.load(r).get("data", []) if m.get("id") == name), None)
+    except Exception:
+        return True                     # LM Studio мовчить: звичайний запит сам покаже помилку
+    if state == "loaded":
+        return True
+    if model == cfg.BRAIN_LOCAL_MODEL and not runtime.GAME and _reloading.acquire(blocking=False):
+        def _reload():
+            try:
+                log.warning(f"Мозок: {name} не завантажена (впала чи вивантажена), вантажу економно")
+                local_preload()
+            finally:
+                _reloading.release()
+        threading.Thread(target=_reload, daemon=True).start()
+    return False
 
 
 def local_preload() -> bool:

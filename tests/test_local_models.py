@@ -162,3 +162,35 @@ def test_local_gpt_oss_goes_through_completions(lin, env):
 def test_action_tag_without_param_is_a_good_local_reply(lin):
     from raphael import llm
     llm._check_local_reply(fake_reply("[EMO:happy] [ACTION:get_time]"))           # не BadLocalReply
+
+
+def _real_local_ready(env):
+    return next(v for m, n, v in env._saved if n == "_local_ready")
+
+
+@pytest.mark.parametrize("state,ready", [("loaded", True), ("not-loaded", False)])
+def test_unloaded_model_is_not_woken_by_a_request(lin, env, monkeypatch, state, ready):
+    """Запит до вивантаженої моделі LM Studio вантажить її сам, з копією ваг у RAM (14,7 ГБ
+    2026-11-07). Тепер такий запит не йде, а модель вантажиться економно у фоні."""
+    import io
+    import json
+    import threading
+    from raphael import llm
+    env.patch("BRAIN_LOCAL_MODEL", "lmstudio:google/gemma-4-26b-a4b-qat")
+    env.patch("GAME", None)
+    body = json.dumps({"data": [{"id": "google/gemma-4-26b-a4b-qat", "state": state}]}).encode()
+    monkeypatch.setattr(llm.urllib.request, "urlopen", lambda url, timeout=0: io.BytesIO(body))
+    reloaded = threading.Event()
+    env.patch("local_preload", lambda: reloaded.set())
+    assert _real_local_ready(env)("lmstudio:google/gemma-4-26b-a4b-qat") is ready
+    assert reloaded.wait(2) is (not ready)
+
+
+def test_lm_studio_silent_means_try_anyway(lin, env, monkeypatch):
+    from raphael import llm
+
+    def down(url, timeout=0):
+        raise OSError("refused")
+    monkeypatch.setattr(llm.urllib.request, "urlopen", down)
+    assert _real_local_ready(env)("lmstudio:google/gemma-4-26b-a4b-qat") is True
+    assert _real_local_ready(env)("groq:openai/gpt-oss-120b") is True
