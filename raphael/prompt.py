@@ -10,6 +10,7 @@ from raphael import brain
 from raphael import diary
 from raphael import emotion
 from raphael import notes
+from raphael import runtime
 from raphael import settings as cfg
 from raphael import trust
 from raphael import vibes
@@ -80,9 +81,21 @@ def build_system_prompt() -> str:
     except Exception as e:
         log.debug(f"brain_block пропущено: {e}")
 
+    # Telegram: бот на звʼязку, тож Лін може скинути Владу щось на телефон. Без цього рядка
+    # на «напиши мені в телеграм» вона чесно казала «в телеграмі я не вмонтована» (2026-11-07)
+    tg_block = ""
+    if runtime.REMOTE_SAY is not None:
+        tg_block = ("TELEGRAM: у тебе є бот у Telegram, Влад пише тобі туди з телефона, а ти можеш "
+                    "написати йому сама: 'скинь мені в телеграм список', 'напиши мені в телегу привіт' → "
+                    "[ACTION:tg_send:що саме написати]. ")
+
     # Тіло на екрані (аватар): що вона може зробити ним на прохання
     body_block = ""
-    if cfg.AVATAR_ENABLED:
+    if runtime.LIN_CHANNEL == "telegram":
+        # Влад не вдома: тіла не бачить, і сміятись тілом у порожній кімнаті нема кому
+        body_block = ("ЗАРАЗ ВЛАД ПИШЕ ТОБІ В TELEGRAM З ТЕЛЕФОНА, біля компа його нема. Відповідай "
+                      "текстом для чату, тіла на екрані він не бачить: тегів avatar не став. ")
+    elif cfg.AVATAR_ENABLED:
         body_block = (
             "ТІЛО: у тебе є тіло на екрані Влада, ти ходиш його моніторами. Коли він просить "
             "щось зробити тілом, додай тег [ACTION:avatar:дія]: dance потанцювати | sitA сісти на вікно | "
@@ -210,7 +223,7 @@ def build_system_prompt() -> str:
         "'в плани' → brain_plan:текст; 'ідея', 'в ідеї' → brain_idea:текст; "
         "'запиши', 'занотуй', 'в мозок', 'у вхідні', 'не забути' → brain_add:текст. "
         "note_add і note_remind ЛИШЕ для нагадування в конкретний час. Слово «плани» означає файл Плани у сховищі. "
-        + body_block +
+        + tg_block + body_block +
         "Якщо дія не потрібна — відповідай без тегу. "
         + ("ФУНКЦІЯ: дію виконуй викликом do_action(type, param) замість тегу, з тими "
            "самими назвами й параметрами. Коротку відповідь пиши звичайним текстом. "

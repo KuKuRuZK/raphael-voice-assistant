@@ -339,6 +339,12 @@ def execute_action(action_str: str):
             tts.speak(result)
             return result
 
+        elif t == "tg_send":
+            from raphael import tg_lin          # тягне httpx лише тоді, коли треба
+            result = tg_lin.send_to_vlad(p)
+            tts.speak(result)
+            return result
+
         elif t == "mail_watch_stop":
             result = gmail.mail_watch_stop(p)
             tts.speak(result)

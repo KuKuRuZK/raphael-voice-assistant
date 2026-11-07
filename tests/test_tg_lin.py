@@ -135,3 +135,23 @@ def test_bot_does_not_start_without_allowed_people(env, lin, monkeypatch):
     env.patch("TELEGRAM_ALLOWED_IDS", [])
     monkeypatch.setattr(tg, "api", lambda *a, **k: pytest.fail("без списку дозволених бот не стартує"))
     tg_lin.run()
+
+
+def test_voice_can_send_to_telegram(chat, env):
+    """«Лін, скинь мені в телеграм привіт»: 2026-11-07 вона відповідала «в телеграмі я не вмонтована»."""
+    from raphael import actions, llm, prompt
+    env.patch("REMOTE_SAY", lambda text: None)          # бот на звʼязку
+    env.patch("TELEGRAM_ALLOWED_IDS", [111])
+    assert "tg_send" in prompt.build_system_prompt()
+    assert llm._find_action("[EMO:happy] Скидаю. [ACTION:tg_send:Привіт!]")[:2] == ("tg_send", "Привіт!")
+    actions.execute_action("[ACTION:tg_send:Привіт!]")
+    assert (111, "Привіт!", {}) in chat
+    assert env.spoken[-1] == "Скинула тобі в Telegram."
+
+
+def test_prompt_knows_vlad_is_on_phone(env, lin):
+    from raphael import prompt
+    env.patch("REMOTE_SAY", lambda text: None)
+    env.patch("LIN_CHANNEL", "telegram")
+    text = prompt.build_system_prompt()
+    assert "TELEGRAM З ТЕЛЕФОНА" in text and "[ACTION:avatar:дія]" not in text

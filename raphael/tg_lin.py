@@ -45,6 +45,24 @@ def say(text: str) -> None:
         log.warning(f"Telegram: не надіслала відповідь: {tg._hide_token(e)}")
 
 
+def send_to_vlad(text: str) -> str:
+    """Дія tg_send: написати Владу в Telegram з голосу вдома («скинь мені в телеграм...»).
+    Приватний чат з людиною має той самий id, що й вона, тож чат відомий і до першого
+    повідомлення з телефона. Повертає, що сказати вголос."""
+    _, text = emotion.take(text)
+    if not text:
+        return "А що саме написати?"
+    if runtime.REMOTE_SAY is None:
+        return "Telegram у мене зараз не підключений."
+    chat = runtime.TG_CHAT_ID or (cfg.TELEGRAM_ALLOWED_IDS[0] if cfg.TELEGRAM_ALLOWED_IDS else None)
+    try:
+        tg.send_message(chat, text)
+    except Exception as e:
+        log.warning(f"Telegram: tg_send не вдалось: {tg._hide_token(e)}")
+        return "Не вийшло надіслати в Telegram."
+    return "Скинула тобі в Telegram."
+
+
 def confirm(question: str) -> bool:
     """Кнопки «Так / Ні» під питанням; чекає натискання до CONFIRM_WAIT секунд.
     Без відповіді це «ні»: мовчання на незворотне не згода."""
