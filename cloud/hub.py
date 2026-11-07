@@ -202,7 +202,9 @@ class Hub:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    logging.getLogger("httpx").setLevel(logging.WARNING)       # httpx пише URL з токеном
+    # httpx пише URL з токеном, а пошук (ddgs, primp) твої запити: у журнал сервера не треба
+    for noisy in ("httpx", "ddgs", "primp"):
+        logging.getLogger(noisy).setLevel(logging.WARNING)
     os.makedirs(brain_mod.DATA, exist_ok=True)
     tools.now()                                                # часова зона є, інакше падаємо зараз
     Hub().run()
