@@ -295,7 +295,7 @@ def main():
                 pystray.MenuItem("Згорнути до іконки", compact_window),
                 pystray.MenuItem("Показати лог",   open_log),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Вимкнути", on_quit),
+                pystray.MenuItem("Вимкнути Лін повністю", on_quit),
             ),
         )
         log.info("Трей запущено")
