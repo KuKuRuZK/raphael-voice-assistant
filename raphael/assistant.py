@@ -493,6 +493,15 @@ def assistant_loop():
     global MODE
     try:
         log.info("=== Лін запущена ===")
+        # Привітання лише своїм голосом і з тілом на екрані: мозок, голос і тіло
+        # стартують разом, і Лін заговорює, коли готові всі (голос ≈15 с, тіло ≈10 с)
+        t0 = time.monotonic()
+        tts.wait_own_voice()
+        if cfg.AVATAR_ENABLED:
+            from raphael import avatar
+            while not avatar.online() and time.monotonic() - t0 < 30:
+                time.sleep(0.5)
+        log.info(f"Старт: голос і тіло готові за {time.monotonic() - t0:.0f} с")
         tts.speak(_startup_greeting())
 
         while True:

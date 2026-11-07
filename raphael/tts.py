@@ -232,19 +232,49 @@ def http_server_up(timeout: float = 1.0) -> bool:
         return False
 
 
+# Свій сервер голосу слухає порт лише після того, як завантажив модель (≈15 с). Раніше Лін
+# на цей час переходила на edge-tts і ще хвилину після того говорила старим голосом, тож
+# привітання завжди звучало чужим голосом (2026-11-07). Тепер вона чекає свій.
+VOICE_WAIT = 120         # с: найдовше, скільки чекаємо, поки сервер вантажить модель (зазвичай 12-47 с)
+VOICE_BROKEN = 600       # с: сервер так і не піднявся, стільки не чекаємо знову
+_server_lock = threading.Lock()
+_server_started = 0.0    # monotonic, коли ми його запустили (0: не запускали)
+
+
 def start_http_server() -> bool:
     """Запустити свій TTS-сервер (TTS_HTTP_SERVER), якщо двигун http і він не відповідає.
-    Поки сервер вантажить модель, говорить edge (див. _engine_audio)."""
-    if cfg.TTS_ENGINE != "http" or not cfg.TTS_HTTP_SERVER or http_server_up():
+    Вдруге не запускає, поки перший ще вантажить модель."""
+    global _server_started
+    if cfg.TTS_ENGINE != "http" or not cfg.TTS_HTTP_SERVER:
         return False
-    cmd = list(cfg.TTS_HTTP_SERVER)
-    if not os.path.exists(cmd[0]):
-        log.warning(f"TTS-сервер: нема {cmd[0]}")
+    with _server_lock:
+        if http_server_up() or (_server_started and time.monotonic() - _server_started < VOICE_WAIT):
+            return False
+        cmd = list(cfg.TTS_HTTP_SERVER)
+        if not os.path.exists(cmd[0]):
+            log.warning(f"TTS-сервер: нема {cmd[0]}")
+            return False
+        subprocess.Popen(cmd, cwd=os.path.dirname(cmd[-1]) or None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        _server_started = time.monotonic()
+        log.info(f"TTS-сервер запущено: {' '.join(cmd)}")
+        return True
+
+
+def wait_own_voice(timeout: float = None) -> bool:
+    """Дочекатись свого голосу: запустити сервер, якщо він лежить, і чекати, поки слухає.
+    True і тоді, коли свого сервера в налаштуваннях нема (чекати нічого)."""
+    if cfg.TTS_ENGINE != "http" or not cfg.TTS_HTTP_URL or http_server_up():
+        return True
+    if not cfg.TTS_HTTP_SERVER:
         return False
-    subprocess.Popen(cmd, cwd=os.path.dirname(cmd[-1]) or None, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                     creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    log.info(f"TTS-сервер запущено: {' '.join(cmd)}")
-    return True
+    start_http_server()
+    end = time.monotonic() + (VOICE_WAIT if timeout is None else timeout)
+    while time.monotonic() < end:
+        if http_server_up(timeout=0.5):
+            return True
+        time.sleep(0.5)
+    return False
 
 
 def _engine_audio(text: str, emo: str = None):
@@ -253,6 +283,12 @@ def _engine_audio(text: str, emo: str = None):
     if cfg.TTS_ENGINE == "piper" and _piper_ready():
         return _piper_audio(text)
     if cfg.TTS_ENGINE == "http" and cfg.TTS_HTTP_URL and time.monotonic() >= _http_down_until:
+        # Сервер вантажиться чи впав: чекаємо й піднімаємо його, а не міняємо голос.
+        # edge-tts лишається лише на випадок, коли свій так і не піднявся
+        if not http_server_up() and not wait_own_voice():
+            _http_down_until = time.monotonic() + VOICE_BROKEN
+            log.warning(f"TTS-сервер не піднявся за {VOICE_WAIT} с: {VOICE_BROKEN // 60} хв говорю через edge-tts")
+            return None
         try:
             return _http_audio(text, emo)
         except Exception as e:

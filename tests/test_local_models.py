@@ -183,7 +183,7 @@ def test_unloaded_model_is_not_woken_by_a_request(lin, env, monkeypatch, state, 
     reloaded = threading.Event()
     env.patch("local_preload", lambda: reloaded.set())
     assert _real_local_ready(env)("lmstudio:google/gemma-4-26b-a4b-qat") is ready
-    assert reloaded.wait(2) is (not ready)
+    assert reloaded.wait(0.3 if ready else 2) is (not ready)
 
 
 def test_lm_studio_silent_means_try_anyway(lin, env, monkeypatch):

@@ -37,6 +37,42 @@ def test_nothing_to_start(env, popen, monkeypatch, engine, cmd):
 
 
 def test_server_up_checks_the_port(env):
-    from raphael import tts
+    real = next(v for m, n, v in env._saved if n == "http_server_up")      # conftest його підміняє
     env.patch("TTS_HTTP_URL", "http://127.0.0.1:9/v1/audio/speech")       # там нікого
-    assert tts.http_server_up(timeout=0.3) is False
+    assert real(timeout=0.3) is False
+
+
+def test_no_second_server_while_first_loads(env, popen, monkeypatch):
+    from raphael import tts
+    monkeypatch.setattr(tts, "http_server_up", lambda timeout=1.0: False)
+    monkeypatch.setattr(tts, "_server_started", 0.0)
+    assert tts.start_http_server() is True
+    assert tts.start_http_server() is False                    # ще вантажить модель
+    assert len(popen) == 1
+
+
+def test_speech_waits_for_own_voice_instead_of_old_one(env, popen, monkeypatch):
+    """Раніше привітання на старті звучало старим голосом edge, бо свій ще вантажився."""
+    import io
+    from raphael import tts
+    up = iter([False, False, False, True, True, True])
+    monkeypatch.setattr(tts, "http_server_up", lambda timeout=1.0: next(up))
+    monkeypatch.setattr(tts, "_server_started", 0.0)
+    monkeypatch.setattr(tts.time, "sleep", lambda s: None)
+    env.patch("TTS_HTTP_URL", "http://127.0.0.1:8880/v1/audio/speech")
+    env.patch("_http_down_until", 0.0)
+    env._saved.append((tts.urllib.request, "urlopen", tts.urllib.request.urlopen))
+    tts.urllib.request.urlopen = lambda req, timeout: io.BytesIO(b"RIFFwav")
+    path = tts._engine_audio("Доброго ранку.")
+    assert path and path.endswith(".wav") and len(popen) == 1
+
+
+def test_old_voice_only_when_own_never_comes(env, popen, monkeypatch):
+    from raphael import tts
+    monkeypatch.setattr(tts, "http_server_up", lambda timeout=1.0: False)
+    monkeypatch.setattr(tts, "_server_started", 0.0)
+    monkeypatch.setattr(tts, "VOICE_WAIT", 0.01)
+    env.patch("TTS_HTTP_URL", "http://127.0.0.1:8880/v1/audio/speech")
+    env.patch("_http_down_until", 0.0)
+    assert tts._engine_audio("Привіт.") is None                 # далі edge
+    assert tts._http_down_until > tts.time.monotonic() + 500   # і довго не чекаємо знову
