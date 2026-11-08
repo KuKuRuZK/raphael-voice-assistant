@@ -187,6 +187,8 @@ FACTS_LIMIT = 900           # символів фактів однієї вак�
 PAUSE = {"linkedin.com": 6.0}   # секунд між запитами до сайту: LinkedIn на швидкі поспіль відповідає 429
 PAUSE_DEFAULT = 1.0
 RETRY_429 = 30              # раз за запуск на сайт: почекати й спробувати ще (LinkedIn відпускає швидко)
+STRIKES = 3                 # з ПК: стільки сторінок поспіль сайт не віддав жодній адресі, далі цей запуск без нього
+STRIKE_PAUSE = 15           # с: перепочинок сайтові після такої сторінки
 SITES = {"djinni.co": "djinni", "jobs.dou.ua": "DOU", "linkedin.com": "LinkedIn"}
 VERDICT_RE = re.compile(r"^\W*(\d{1,2})\W+(так|ні|yes|no)\b[\s|:;,.)\-]*(.*)$", re.I | re.M)
 
@@ -236,11 +238,14 @@ def _refused(error) -> bool:
 
 
 class _Pace:
-    """Пауза перед повторним запитом до того самого сайту, а на 429 ще одна спроба після довшої."""
+    """Пауза перед повторним запитом до того самого сайту; сторінку, якої сайт не дав серверу,
+    пробуємо з домашньої адреси, і навпаки."""
 
     def __init__(self, sleep):
         self.sleep, self.used, self.retried = sleep, set(), set()
-        self.via_home, self.home_failed, self.home_pages = set(), set(), 0
+        self.via_home, self.prefer_home, self.home_pages = set(), set(), 0
+        self.home_down = False      # ПК вимкнений чи мовчить: цей запуск його вже не питаємо
+        self.strikes = {}           # сайт → скільки сторінок поспіль не віддав жодній адресі
 
     def __call__(self, url: str) -> None:
         site = _site(url)
@@ -249,29 +254,47 @@ class _Pace:
         self.used.add(site)
 
     def fetch(self, get, url: str, home=None):
-        """get(url) → (щось, причина або None). Сайт не пускає сервер, а ПК на звʼязку: те саме
-        з домашньої адреси (home), і далі весь цей сайт за запуск уже через ПК (2026-11-08 LinkedIn
-        пускав сервер ≈20 запитів, і 59 вакансій лишились неперевіреними). Без ПК: один повтор
-        на сайт за запуск, якщо відповів 429."""
+        """get(url) → (щось, причина або None). Сайт не пускає одну адресу: те саме з другої
+        (home: домашній ПК), і далі першою та, що спрацювала. LinkedIn обмежує за частотою з
+        адреси й навмання: 2026-11-08 та сама вакансія за хвилину відкрилась з обох, а сусідня
+        вдома дала 429, тож одна відмова ще не кінець. Без ПК: один повтор на сайт за запуск
+        після RETRY_429 секунд, якщо відповів 429."""
         site = _site(url)
         self(url)
-        if site in self.via_home:
-            got, error = home(url)
-            self.home_pages += error is None
-            return got, error
-        got, error = get(url)
-        if _refused(error) and home and site not in self.home_failed:
-            got_home, error_home = home(url)
-            if error_home is None:
-                self.via_home.add(site)
-                self.home_pages += 1
-                return got_home, None
-            self.home_failed.add(site)
-        if error and "429" in error and site not in self.retried:
-            self.retried.add(site)
-            self.sleep(RETRY_429)
-            got, error = get(url)
+        sources = [("server", get)] + ([("home", home)] if home and not self.home_down else [])
+        if site in self.prefer_home:
+            sources.reverse()
+        got, error = None, None
+        for name, fn in sources:
+            got_now, error_now = fn(url)
+            if name == "home" and error_now and error_now.startswith("ПК "):
+                self.home_down = True           # «ПК вимкнений», «ПК не відповів»: це не відповідь сайту
+                continue
+            got, error = got_now, error_now
+            if not _refused(error):             # віддав (або справжнє «нема», 404)
+                if name == "home":
+                    self.via_home.add(site)
+                    self.prefer_home.add(site)
+                    self.home_pages += error is None
+                else:
+                    self.prefer_home.discard(site)
+                self.strikes[site] = 0
+                return got, error
+        if self.home_down or not home:
+            if error and "429" in error and site not in self.retried:
+                self.retried.add(site)
+                self.sleep(RETRY_429)
+                got, error = get(url)
+                if not _refused(error):
+                    return got, error
+        else:
+            self.sleep(STRIKE_PAUSE)
+        self.strikes[site] = self.strikes.get(site, 0) + 1
         return got, error
+
+    def gave_up(self, site: str, home) -> bool:
+        """Чи досить на цей запуск: з ПК після STRIKES сторінок поспіль, без ПК після першої."""
+        return self.strikes.get(site, 0) >= (STRIKES if home and not self.home_down else 1)
 
 
 def collect(watch: dict, sleep=time.sleep, home=None) -> dict:
@@ -303,10 +326,11 @@ def collect(watch: dict, sleep=time.sleep, home=None) -> dict:
             later += 1
             continue
         text, error = pace.fetch(lambda url: tools.page_text(url, limit=20000), _facts_url(link), home_text)
-        if _refused(error):
-            blocked.add(site)                   # не запамʼятовуємо: спробуємо наступного разу
+        if _refused(error):                     # не запамʼятовуємо: спробуємо наступного разу
             later += 1
             steps.append(f"не відкрилась: {link} ({error})")
+            if pace.gave_up(site, home):
+                blocked.add(site)
             continue
         checked.append(link)
         if error:                               # 404 і подібне: вакансію зняли

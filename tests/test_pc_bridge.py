@@ -329,6 +329,29 @@ def test_watcher_reads_through_home_when_server_is_refused(server_blocked):
     assert any("через домашній ПК (LinkedIn): 3 сторінок" in s for s in out["steps"])
 
 
+def test_both_addresses_tried_and_site_left_only_after_three_misses(monkeypatch):
+    """LinkedIn відмовляє то серверу, то дому навмання: одна сторінка, якої не дала жодна адреса,
+    ще не привід кидати сайт; три поспіль уже так."""
+    from cloud import watchers as watch_mod
+    links = [f"https://lt.linkedin.com/jobs/view/job-{n}?position=1" for n in range(1000001, 1000008)]
+    monkeypatch.setattr(tools, "page_links", lambda url: (links, None))
+    server_ok = {POSTING.format(1000001), POSTING.format(1000003)}
+    home_ok = {POSTING.format(1000002)}
+    monkeypatch.setattr(tools, "page_text", lambda url, limit=10000: (
+        ("AI Engineer\nX\nVilnius\n", None) if url in server_ok else ("", "Сторінка відповіла 429.")))
+    tried = []
+
+    def home(kind, url):
+        tried.append(url)
+        return ("AI Engineer\nY\nVilnius\n", None) if url in home_ok else ("", "Сторінка відповіла 429.")
+    out = watch_mod.collect({"id": 2, "goal": f"AI {LI}", "seen": []}, sleep=lambda s: None, home=home)
+    got = [l for l, _ in out["jobs"]]
+    assert got == [f"https://www.linkedin.com/jobs/view/{n}/" for n in (1000001, 1000002, 1000003)]
+    assert out["blocked"] == ["LinkedIn"] and out["later"] == 4 and out["via_home"] == ["LinkedIn"]
+    assert POSTING.format(1000003) in tried                     # після дому першим питали дім, потім сервер
+    assert POSTING.format(1000007) not in tried                 # після трьох промахів поспіль далі не стукали
+
+
 def test_watcher_without_pc_falls_back_to_waiting(server_blocked):
     from cloud import watchers as watch_mod
     pauses = []
