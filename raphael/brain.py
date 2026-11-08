@@ -54,12 +54,39 @@ def brain_capture(text: str, target: str = "вхідні") -> str:
                 f.write(_BRAIN_HEADER.format(date=datetime.now().strftime("%Y-%m-%d"),
                                              title=fname[:-3]))
         with open(path, "a", encoding="utf-8") as f:
-            f.write(f"- **{datetime.now().strftime('%Y-%m-%d %H:%M')}** — {text}\n")
+            f.write(f"- **{datetime.now().strftime('%Y-%m-%d %H:%M')}** {text}\n")
         log.info(f"Brain capture [{fname}]: {text[:80]}")
         where = {"плани": "у плани", "ідеї": "в ідеї"}.get(key, "у вхідні")
         return f"Записала {where}: «{text}»."
     except Exception as e:
         log.error(f"Brain capture помилка: {e}")
+        return "Не вийшло записати, файл не піддався."
+
+
+NOTE_LINES = 80             # стільки рядків нотатки від справи з сервера, решта обрізається
+
+
+def brain_note(title: str, text: str, source: str = "") -> str:
+    """Нотатка з кількох рядків у «Вхідні» (міст до ПК: звіт справи з сервера). Лише дописує
+    в кінець, нічого не переписує; рядки йдуть з відступом під пунктом, тож список цілий."""
+    title = " ".join((title or "").split())[:120] or "нотатка"
+    lines = [l.rstrip() for l in (text or "").strip().splitlines() if l.strip()][:NOTE_LINES]
+    if not lines:
+        return "Нема що записати: текст порожній."
+    if not os.path.isdir(cfg.BRAIN_VAULT):
+        log.error(f"Brain: сховища немає за шляхом {cfg.BRAIN_VAULT}")
+        return "Не знайшла сховище на диску, записати нікуди."
+    try:
+        if not os.path.exists(BRAIN_INBOX):
+            with open(BRAIN_INBOX, "w", encoding="utf-8") as f:
+                f.write(_BRAIN_HEADER.format(date=datetime.now().strftime("%Y-%m-%d"), title="Вхідні"))
+        head = f"- **{datetime.now().strftime('%Y-%m-%d %H:%M')}** {('Лін, ' + source + ': ') if source else ''}{title}\n"
+        with open(BRAIN_INBOX, "a", encoding="utf-8") as f:
+            f.write(head + "".join(f"  {l}\n" for l in lines))
+        log.info(f"Brain note: {title[:80]} ({len(lines)} рядків)")
+        return f"Записала у «Вхідні» сховища: «{title}», {len(lines)} рядків."
+    except Exception as e:
+        log.error(f"Brain note помилка: {e}")
         return "Не вийшло записати, файл не піддався."
 
 

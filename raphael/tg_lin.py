@@ -17,6 +17,7 @@ import threading
 import uuid
 
 from raphael import emotion
+from raphael import pc_bridge
 from raphael import runtime
 from raphael import settings as cfg
 from raphael import tg
@@ -64,10 +65,11 @@ def send_to_vlad(text: str) -> str:
     return "Скинула тобі в Telegram."
 
 
-def confirm(question: str) -> bool:
+def confirm(question: str, chat=None) -> bool:
     """Кнопки «Так / Ні» під питанням; чекає натискання до CONFIRM_WAIT секунд.
-    Без відповіді це «ні»: мовчання на незворотне не згода."""
-    chat = runtime.TG_CHAT_ID
+    Без відповіді це «ні»: мовчання на незворотне не згода. chat: куди питати, якщо Влад
+    ще не писав з телефона (міст до ПК питає й тоді)."""
+    chat = runtime.TG_CHAT_ID or chat
     if not chat:
         return False
     key = uuid.uuid4().hex[:10]
@@ -333,12 +335,19 @@ def task_list() -> str:
         return "Не достукалась до сервера."
 
 
-def _take_from_hub(wait: int = 25) -> list:
+def _take_from_hub(wait: int = 25):
+    """→ (оновлення Telegram, завдання для ПК від агента на сервері)."""
     import httpx
     r = httpx.get(f"http://127.0.0.1:{cfg.CLOUD_LOCAL_PORT}/home/updates", params={"wait": wait},
                   headers={"X-Lin-Key": tg.hub_key()}, timeout=wait + 15)
     r.raise_for_status()
-    return r.json().get("updates", [])
+    body = r.json()
+    return body.get("updates", []), body.get("jobs", [])
+
+
+def _job_done(job_id, result: str) -> None:
+    """Результат завдання для ПК назад на хаб (міст до ПК, raphael/pc_bridge.py)."""
+    _hub("POST", "/home/jobs", {"id": job_id, "result": result})
 
 
 def _dispatch(update: dict) -> None:
@@ -353,6 +362,7 @@ def _dispatch(update: dict) -> None:
 
 def _pull_from_hub() -> None:
     _kill_stale_tunnels()
+    threading.Thread(target=pc_bridge.worker, args=(_job_done,), daemon=True, name="pc-bridge").start()
     tunnel, pause, failures, told = None, 2, 0, False
     while not _stop.is_set():
         if tunnel is None or tunnel.poll() is not None:
@@ -366,7 +376,9 @@ def _pull_from_hub() -> None:
             _stop.wait(2)                           # ssh треба мить, щоб підняти порт
             continue
         try:
-            updates = _take_from_hub()
+            updates, jobs = _take_from_hub()
+            for job in jobs:
+                pc_bridge.submit(job)
             if failures:
                 log.info("Хаб: звʼязок є")
             failures, pause = 0, 2
@@ -386,6 +398,7 @@ def _pull_from_hub() -> None:
 
 def stop() -> None:
     _stop.set()
+    pc_bridge.stop()
     _close_tunnel()                 # інакше ssh переживе Лін і триматиме порт
     runtime.REMOTE_SAY = runtime.REMOTE_CONFIRM = None
     runtime.use_channel("voice")

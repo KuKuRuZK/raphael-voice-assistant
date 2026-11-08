@@ -30,6 +30,7 @@ from raphael import tg
 from cloud import agent as agent_mod
 from cloud import mail as mail_mod
 from cloud import brain as brain_mod
+from cloud import pcjobs
 from cloud import tasks as tasks_mod
 from cloud import tools
 from cloud import watchers as watch_mod
@@ -85,6 +86,7 @@ class Router:
         self.home_queue = []        # (коли покладено, оновлення)
         self.waiting = 0            # скільки запитів домашньої зараз чекає
         self.home_seen = float("-inf")
+        self.nudged = False         # є завдання для ПК: відпустити запит домашньої зараз
 
     def home_online(self) -> bool:
         with self.cond:
@@ -93,6 +95,12 @@ class Router:
     def give_home(self, update: dict) -> None:
         with self.cond:
             self.home_queue.append((self.clock(), update))
+            self.cond.notify_all()
+
+    def nudge(self) -> None:
+        """Завдання для ПК зʼявилось: запит домашньої, що чекає, хай повернеться зараз і забере."""
+        with self.cond:
+            self.nudged = True
             self.cond.notify_all()
 
     def take_home(self, wait: float = LONG_POLL, alive=lambda: True):
@@ -107,7 +115,7 @@ class Router:
             gone = False
             try:
                 left = wait
-                while not self.home_queue and left > 0:
+                while not self.home_queue and not self.nudged and left > 0:
                     if not alive():
                         gone = True
                         return None
@@ -118,6 +126,7 @@ class Router:
                     return None
                 taken = [u for _, u in self.home_queue]
                 self.home_queue.clear()
+                self.nudged = False
                 return taken
             finally:
                 self.waiting -= 1
@@ -142,7 +151,7 @@ class Router:
 
 
 class Hub:
-    def __init__(self, router: Router = None, brain=None, store=None, agent=None, watches=None):
+    def __init__(self, router: Router = None, brain=None, store=None, agent=None, watches=None, pc=None):
         self.router = router or Router()
         self.brain = brain or brain_mod.Brain(on_task=self.create_task)
         self.server_queue = queue.Queue()
@@ -151,8 +160,9 @@ class Hub:
         self.chat_id = cfg.TELEGRAM_ALLOWED_IDS[0] if cfg.TELEGRAM_ALLOWED_IDS else None
         self.told_offline = False   # «комп вимкнений» кажемо раз на кожну відсутність
         self.tasks = store or tasks_mod.TaskStore(os.path.join(brain_mod.DATA, "tasks.json"))
+        self.pc = pc or pcjobs.PcJobs(os.path.join(brain_mod.DATA, "pc_jobs.json"))
         self.agent = agent or agent_mod.Agent(self.tasks, notify=self.say, ask=self.ask_question,
-                                              on_finish=self._task_finished)
+                                              on_finish=self._task_finished, pc=self.send_to_pc)
         self.watches = watches or watch_mod.WatchStore(os.path.join(brain_mod.DATA, "watches.json"))
         self.prefs_path = os.path.join(brain_mod.DATA, "prefs.json")
         self.away_path = os.path.join(brain_mod.DATA, "away.json")
@@ -275,6 +285,28 @@ class Hub:
     def judge(prompt: str) -> str:
         return agent_mod.chat_tools([{"role": "user", "content": prompt}], use_tools=False).get("content") or ""
 
+    # ── Міст до ПК (етап 4) ──
+    def send_to_pc(self, task: dict, call_id: str, tool: str, args: dict) -> None:
+        """Агентові потрібен домашній ПК: завдання в чергу; ПК вимкнений, то сказати, що справа чекає."""
+        job = self.pc.add(task["id"], call_id, tool, args)
+        log.info(f"Справа #{task['id']}: завдання для ПК #{job['id']} ({tool})")
+        if self.router.home_online():
+            self.router.nudge()
+        else:
+            self.say(f"💻 #{task['id']} чекає на компʼютер, щоб {pcjobs.describe(tool, args)}. "
+                     "Зроблю, щойно ти його ввімкнеш. Скасувати: /cancel " + str(task["id"]))
+
+    def pc_done(self, job_id, result: str) -> bool:
+        """Результат з дому: продовжити справу, якщо вона саме на нього й чекала."""
+        job = self.pc.finish(job_id, result)
+        if not job:
+            return False
+        task = self.tasks.get(job["task_id"])
+        if task and task["status"] == "waiting_pc" and task.get("pending_call") == job["call_id"]:
+            log.info(f"Справа #{task['id']}: ПК відповів, продовжую")
+            self.task_queue.put((task["id"], {"pc": result}))
+        return True
+
     def watch_loop(self) -> None:
         while not self.stop.wait(30):
             try:
@@ -384,7 +416,9 @@ class Hub:
                 continue
             task = self.tasks.get(task_id)
             watch = self.watches.get(task["watch_id"]) if task and task.get("watch_id") else None
-            if watch and answer is None and watch_mod.job_sources(watch["goal"]):
+            if isinstance(answer, dict):                    # результат з ПК
+                self.agent.run(task_id, pc_result=answer.get("pc", ""))
+            elif watch and answer is None and watch_mod.job_sources(watch["goal"]):
                 self.run_job_watch(task)
             else:
                 self.agent.run(task_id, answer)
@@ -407,6 +441,7 @@ class Hub:
             task = self.tasks.get(number) if number else None
             if task and task["status"] not in ("done", "failed", "cancelled"):
                 self.tasks.update(number, status="cancelled")
+                self.pc.cancel_task(number)
                 self.say(f"✖️ #{number} скасовано.")
             else:
                 self.say("Нема такої активної справи. Список: /tasks")
@@ -573,9 +608,10 @@ class Hub:
                 self.wfile.write(body)
 
             def do_POST(self):
-                """Домашня Лін доручає голосом: POST /tasks {"goal"} чи /watches {"text": "щоранку ..."}."""
+                """Домашня Лін доручає голосом: POST /tasks {"goal"} чи /watches {"text": "щоранку ..."};
+                віддає результат завдання для ПК: POST /home/jobs {"id", "result"}."""
                 path = urllib.parse.urlparse(self.path).path
-                if path not in ("/tasks", "/watches", "/mail/sweep"):
+                if path not in ("/tasks", "/watches", "/mail/sweep", "/home/jobs"):
                     return self._send(404, {"error": "нема"})
                 if self.headers.get("X-Lin-Key") != key:
                     return self._send(403, {"error": "чужий"})
@@ -583,6 +619,8 @@ class Hub:
                     body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
                 except ValueError:
                     return self._send(400, {"error": "не JSON"})
+                if path == "/home/jobs":
+                    return self._send(200, {"ok": hub.pc_done(body.get("id"), str(body.get("result", "")))})
                 if path == "/mail/sweep":
                     return self._send(200, {"text": hub.mail_sweep("voice")})
                 if path == "/watches":
@@ -602,14 +640,18 @@ class Hub:
                 if url.path == "/away":
                     return self._send(200, {"text": hub.away_text()})
                 wait = float(urllib.parse.parse_qs(url.query).get("wait", [LONG_POLL])[0])
+                if hub.pc.has_pending():            # завдання для ПК чекало, поки вона ввімкнеться
+                    wait = 0
                 updates = hub.router.take_home(min(wait, 50), alive=lambda: _peer_alive(self.connection))
                 if updates is None:
                     return                          # домашня пішла, відповідати нікому
+                jobs = hub.pc.for_home()
                 try:
-                    self._send(200, {"updates": updates})
+                    self._send(200, {"updates": updates, "jobs": jobs})
                 except OSError:
                     log.info("Домашня зникла, поки віддавала; повідомлення відповість сервер")
                     hub.router.give_back(updates)
+                    hub.pc.unsend([j["id"] for j in jobs])
 
         return ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
 

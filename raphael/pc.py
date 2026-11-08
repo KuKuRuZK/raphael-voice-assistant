@@ -422,22 +422,22 @@ def _capture_screen_b64(max_side: int = 1600, quality: int = 75, which: str = "a
 
 
 def _screen_look(question: str = "") -> None:
-    """
-    Дивиться на поточний екран через модель із зором і озвучує.
-    question — якщо задано, відповідає на конкретне питання про екран.
-    """
+    """Дивиться на екран через модель із зором і озвучує відповідь (question: конкретне питання)."""
+    tts.speak(describe_screen(question))
+
+
+def describe_screen(question: str = "", which: str = None) -> str:
+    """Відповідь моделі із зором про екран, текстом: для голосу і для справ з сервера (міст до ПК)."""
     models = [m for m in (cfg.VISION_MODEL, cfg.VISION_FALLBACK_MODEL) if m]
     if not models:
         log.warning("Screen look: vision-модель не налаштована")
-        tts.speak("Зараз не бачу екран: не налаштована модель із зором.")
-        return
-    which = _which_monitor(question)
+        return "Зараз не бачу екран: не налаштована модель із зором."
+    which = which or _which_monitor(question)
     try:
         b64 = _capture_screen_b64(which=which)
     except Exception as e:
         log.error(f"Screen look: знімок не вийшов: {e}", exc_info=True)
-        tts.speak("Не вдалося зняти екран.")
-        return
+        return "Не вдалося зняти екран."
     prompt = question.strip() or "Що зараз на екрані? Опиши коротко українською, одне-два речення."
     if which == "all":
         prompt += " На знімку всі монітори поруч; про вікно Telegram і LM Studio не розповідай, якщо не питають."
@@ -455,11 +455,10 @@ def _screen_look(question: str = "") -> None:
                 continue
             answer = re.sub(r"[`*_#]+", "", answer)        # розмітку не зачитуємо
             log.info(f"Screen look ({model}, монітор {which}): '{answer[:100]}'")
-            tts.speak(answer)
-            return
+            return answer
         except Exception as e:
             log.warning(f"Screen look: {model} не відповіла: {e}")
-    tts.speak("Не вдалося подивитись на екран: моделі із зором не відповіли.")
+    return "Не вдалося подивитись на екран: моделі із зором не відповіли."
 
 
 SHUTDOWN_DELAY = 30   # секунд до вимкнення/ребуту: час передумати

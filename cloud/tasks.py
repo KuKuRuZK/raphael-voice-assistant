@@ -11,9 +11,10 @@ import os
 import threading
 import time
 
-ICONS = {"new": "🕐", "working": "⏳", "waiting": "❓", "done": "✅", "failed": "⚠️", "cancelled": "✖️"}
-WORDS = {"new": "у черзі", "working": "роблю", "waiting": "чекаю тебе", "done": "готово",
-         "failed": "не вийшло", "cancelled": "скасовано"}
+ICONS = {"new": "🕐", "working": "⏳", "waiting": "❓", "waiting_pc": "💻", "done": "✅", "failed": "⚠️",
+         "cancelled": "✖️"}
+WORDS = {"new": "у черзі", "working": "роблю", "waiting": "чекаю тебе", "waiting_pc": "чекаю на ПК",
+         "done": "готово", "failed": "не вийшло", "cancelled": "скасовано"}
 KEEP_FINISHED = 30          # стільки завершених справ лишається у файлі
 
 
@@ -97,6 +98,8 @@ def details(task: dict) -> str:
         out.append(f"  • {s}")
     if task["status"] == "waiting" and task["question"]:
         out.append(f"Питання: {task['question']}")
+    if task["status"] == "waiting_pc" and task["question"]:
+        out.append(f"Чекаю на ПК, щоб {task['question']}")
     if task["result"]:
         out.append("\n" + task["result"])
     return "\n".join(out)

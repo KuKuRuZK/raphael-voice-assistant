@@ -20,6 +20,7 @@ import os
 import time
 
 from cloud import brain as brain_mod
+from cloud import pcjobs
 from cloud import tools
 
 log = logging.getLogger("Лін")
@@ -64,7 +65,15 @@ class Unavailable(Exception):
     pass
 
 
-def _system(goal: str) -> str:
+PC_HINT = (
+    "Ще в тебе є руки на домашньому компʼютері Влада (pc_look, pc_read_page, pc_note, pc_say): бери їх лише "
+    "тоді, коли справа цього просить (записати в Obsidian, глянути на екран, сказати вголос удома, сторінка не "
+    "відкривається з сервера). Компʼютер може бути вимкнений: тоді справа почекає, поки Влад його ввімкне, і це "
+    "нормально. Що вийшло на ПК, приходить результатом інструмента. "
+)
+
+
+def _system(goal: str, pc: bool = False) -> str:
     return (
         "Ти Лін, і Влад доручив тобі справу, поки він зайнятий. Виконуй її сама, кроками, інструментами. "
         f"Справа: {goal}\n"
@@ -74,6 +83,7 @@ def _system(goal: str) -> str:
         "Посилання бери ЛИШЕ з того, що бачила на сторінках чи в пошуку: не вигадуй номерів і адрес. У звіті не "
         "переказуй, що відкривала: справжній перелік твоїх кроків додається до звіту сам. "
         "ask_vlad лише коли справді без його рішення далі ніяк (вибір між варіантами, бюджет, уточнення мети). "
+        + (PC_HINT if pc else "") +
         f"У тебе до {MAX_STEPS} кроків. Закінчуй finish: коротко й по суті, українською, з посиланнями на "
         "джерела; що не встигла чи не знайшла, теж скажи. "
         "Звіт іде в Telegram на телефон: звичайний текст, короткі пункти, без таблиць, без ** і # (розмітка "
@@ -112,15 +122,17 @@ def _for_provider(messages: list, provider: str) -> list:
     return out
 
 
-def chat_tools(messages: list, use_tools: bool = True) -> dict:
-    """Один крок моделі з інструментами → повідомлення асистента як dict (для історії)."""
+def chat_tools(messages: list, use_tools=True) -> dict:
+    """Один крок моделі з інструментами → повідомлення асистента як dict (для історії).
+    use_tools: True (звичайні TOOLS), список інструментів (з руками на ПК) або False."""
     from openai import BadRequestError, RateLimitError
     errors = []
     for spec in MODELS:
         provider, _, model = spec.partition(":")
         for attempt in range(3):
             try:
-                kw = {"tools": TOOLS, "tool_choice": "auto"} if use_tools else {}
+                kw = ({"tools": use_tools if isinstance(use_tools, list) else TOOLS, "tool_choice": "auto"}
+                      if use_tools else {})
                 r = brain_mod._client(provider).chat.completions.create(
                     model=model, messages=_for_provider(messages, provider), max_tokens=1500, temperature=0.3,
                     **brain_mod._kwargs(model), **kw)
@@ -151,10 +163,11 @@ def chat_tools(messages: list, use_tools: bool = True) -> dict:
 class Agent:
     """Виконує справи зі сховища. notify(текст) і ask(справа, питання) → id повідомлення в Telegram."""
 
-    def __init__(self, store, notify, ask, chat=None, on_finish=None):
+    def __init__(self, store, notify, ask, chat=None, on_finish=None, pc=None):
         self.store, self.notify, self.ask = store, notify, ask
         self.chat = chat or chat_tools
         self.on_finish = on_finish      # (справа, звіт) → True, якщо звіт уже оброблено (вартові)
+        self.pc = pc                    # (справа, id виклику, інструмент, аргументи): завдання для ПК (хаб)
 
     def _tool(self, name: str, args: dict) -> str:
         if name == "search":
@@ -165,25 +178,42 @@ class Agent:
             return tools.news(args.get("topic", ""))
         if name == "check_job":
             return tools.job_facts(args.get("url", ""))
+        if name in pcjobs.NAMES:
+            return "Компʼютер Влада для цієї справи недоступний."
         return f"Нема такого інструмента: {name}"
 
-    def run(self, task_id, answer: str = None) -> None:
+    @staticmethod
+    def _skip_rest(messages: list, calls: list, current: dict, why: str) -> None:
+        """Справа стає на паузу посеред кроку: решта викликів того кроку теж мусить мати відповідь,
+        інакше на продовженні модель відповість 400 (виклик без результату)."""
+        for c in calls[calls.index(current) + 1:]:
+            messages.append({"role": "tool", "tool_call_id": c["id"],
+                             "content": f"Не виконано: {why}. Якщо ще треба, виклич знову."})
+
+    def run(self, task_id, answer: str = None, pc_result: str = None) -> None:
         task = self.store.get(task_id)
         if not task or task["status"] in ("done", "failed", "cancelled"):
             return
-        messages = task["messages"] or [{"role": "system", "content": _system(task["goal"])},
+        if (task["status"] == "waiting" and answer is None) or (task["status"] == "waiting_pc" and pc_result is None):
+            return                          # ще чекає на Влада чи на ПК: без відповіді рушати нема з чим
+        use_pc = bool(self.pc) and not task.get("watch_id")
+        messages = task["messages"] or [{"role": "system", "content": _system(task["goal"], pc=use_pc)},
                                         {"role": "user", "content": task["goal"]}]
         if answer is not None and task.get("pending_call"):
             messages.append({"role": "tool", "tool_call_id": task["pending_call"], "content": f"Влад відповів: {answer}"})
             task["steps"].append(f"Влад: {answer[:80]}")
+        if pc_result is not None and task.get("pending_call"):
+            messages.append({"role": "tool", "tool_call_id": task["pending_call"],
+                             "content": str(pc_result)[:RESULT_LIMIT]})
+            task["steps"].append(f"ПК: {str(pc_result)[:80]}")
         self.store.update(task_id, status="working", pending_call=None, question="", messages=messages,
                           steps=task["steps"])
         steps = task["steps"]
         try:
-            while sum(1 for s in steps if not s.startswith("Влад:")) < MAX_STEPS:
+            while sum(1 for s in steps if not s.startswith(("Влад:", "ПК:"))) < MAX_STEPS:
                 if self.store.get(task_id)["status"] == "cancelled":
                     return
-                msg = self.chat(messages)
+                msg = self.chat(messages, TOOLS + pcjobs.TOOLS) if use_pc else self.chat(messages)
                 messages.append(msg)
                 calls = msg.get("tool_calls") or []
                 if not calls:                       # модель просто відповіла текстом: це і є підсумок
@@ -199,9 +229,18 @@ class Agent:
                     if name == "ask_vlad":
                         question = args.get("question") or "Що робити далі?"
                         steps.append(f"питаю: {question[:80]}")
+                        self._skip_rest(messages, calls, call, "спершу чекала відповіді Влада")
                         self.store.update(task_id, status="waiting", question=question, pending_call=call["id"],
                                           messages=messages, steps=steps)
                         self.store.update(task_id, question_msg=self.ask(self.store.get(task_id), question))
+                        return
+                    if name in pcjobs.NAMES and use_pc:
+                        what = pcjobs.describe(name, args)
+                        steps.append(f"на ПК: {what[:80]}")
+                        self._skip_rest(messages, calls, call, "спершу чекала на ПК")
+                        self.store.update(task_id, status="waiting_pc", question=what, pending_call=call["id"],
+                                          messages=messages, steps=steps)
+                        self.pc(self.store.get(task_id), call["id"], name, args)
                         return
                     result = self._tool(name, args)
                     verb = {"search": "шукаю", "read_page": "читаю", "news": "новини",
@@ -228,7 +267,7 @@ class Agent:
         """Що агент справді відкривав, з журналу кроків. 2026-11-08 вартовий у звіті писав, що
         читав DOU й шукав у Google, а насправді відкрив один список djinni і «перевірив» вакансію
         з вигаданим номером 123456 (за ним була зовсім інша, EPAM Big Data Lead)."""
-        opened = [s for s in steps if s.startswith(("читаю:", "перевіряю:"))]
+        opened = [s for s in steps if s.startswith(("читаю:", "перевіряю:", "на ПК: відкрити"))]
         searched = sum(1 for s in steps if s.startswith("шукаю:"))
         if not opened and not searched:
             return ""
