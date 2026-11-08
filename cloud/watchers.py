@@ -189,7 +189,7 @@ PAUSE_DEFAULT = 1.0
 RETRY_429 = 30              # раз за запуск на сайт: почекати й спробувати ще (LinkedIn відпускає швидко)
 STRIKES = 3                 # з ПК: стільки сторінок поспіль сайт не віддав жодній адресі, далі цей запуск без нього
 STRIKE_PAUSE = 15           # с: перепочинок сайтові після такої сторінки
-SITES = {"djinni.co": "djinni", "jobs.dou.ua": "DOU", "linkedin.com": "LinkedIn"}
+SITES = {"djinni.co": "djinni", "jobs.dou.ua": "DOU", "linkedin.com": "LinkedIn", "cvbankas.lt": "cvbankas"}
 VERDICT_RE = re.compile(r"^\W*(\d{1,2})\W+(так|ні|yes|no)\b[\s|:;,.)\-]*(.*)$", re.I | re.M)
 
 
@@ -205,6 +205,8 @@ def job_link(href: str):
         return f"https://djinni.co{path.rstrip('/')}/"
     if site == "jobs.dou.ua" and re.fullmatch(r"/companies/[\w.-]+/vacancies/\d+/?", path):
         return f"https://jobs.dou.ua{path.rstrip('/')}/"
+    if site == "cvbankas.lt" and re.fullmatch(r"/[\w-]+/1-\d+/?", path):
+        return f"https://en.cvbankas.lt{path.rstrip('/')}"
     m = re.search(r"/jobs/view/(?:[^/]*-)?(\d{6,})/?$", path) if site == "linkedin.com" else None
     return f"https://www.linkedin.com/jobs/view/{m[1]}/" if m else None
 
@@ -351,10 +353,11 @@ def judge_prompt(goal: str, batch: list) -> str:
     jobs = "\n\n".join(f"[{i}]\n{facts}" for i, (_, facts) in enumerate(batch, 1))
     return ("Ти Лін і допомагаєш Владу шукати роботу. Його критерії:\n"
             f"{criteria}\n\n"
-            "Нижче нові вакансії: назва й рядки з фактами з їхніх власних сторінок. Для КОЖНОЇ рівно один рядок:\n"
-            "номер | так або ні | посада, компанія: рівень, формат, звідки беруть кандидатів, зарплата; для «ні» "
-            "ще причина\n"
-            "Пиши українською. Чого у фактах нема, просто пропусти, без прочерків. Вирішуй лише за цими фактами, "
+            "Нижче нові вакансії: назва й рядки з фактами з їхніх власних сторінок. Для КОЖНОЇ рівно один рядок.\n"
+            "Підходить: номер | так | посада | компанія | напрям (одне з: Python, AI/LLM, QA, Data, Web) | місто й "
+            "формат | зарплата як на сторінці | відповідність 0-100 | одним реченням чому (і чи вимагають литовську)\n"
+            "Не підходить: номер | ні | посада, компанія: причина\n"
+            "Пиши українською. Чого у фактах нема, лиши поле порожнім, без прочерків. Вирішуй лише за цими фактами, "
             "нічого не додавай від себе. Якщо фактів не вистачає, щоб відкинути, пиши «так» і в кінці «(перевір)». "
             "Рівень «Mid-Senior level» у LinkedIn стоїть у більшості вакансій, і в middle теж: сам по собі це не "
             "senior; senior лише тоді, коли Senior чи Lead у назві посади або досвід від 5 років. "
@@ -374,6 +377,24 @@ def _clean(why: str) -> str:
     return why + (" (перевір)" if check else "")
 
 
+def _fit_fields(rest: str, facts: str) -> dict:
+    """Рядок «так» → поля для звіту й трекера. Модель не дотрималась формату: увесь рядок
+    іде в звіт як є, а назва для трекера з першого рядка сторінки."""
+    parts = [p.strip() for p in rest.split("|")]
+    if len(parts) >= 7:
+        title, company, area, place, salary, match = (_clean(p) for p in parts[:6])
+        why = _clean(" | ".join(parts[6:]))
+        head = ", ".join(x for x in (title, company) if x)
+        tail = ", ".join(x for x in (place, salary) if x)
+        line = head + (f": {tail}" if tail else "") + (f". {why}" if why else "")
+    else:
+        title, company, area, place, salary, match, why = _name(facts), "", "", "", "", "", _clean(rest)
+        line = why or title
+    m = re.search(r"\d{1,3}", match)
+    return {"title": title[:120], "company": company[:80], "area": area[:30], "place": place[:80],
+            "salary": salary[:60], "match": min(int(m[0]), 100) if m else "", "why": why[:300], "line": line}
+
+
 def _name(facts: str) -> str:
     """Назва вакансії з першого рядка її сторінки, без хвоста з назвою сайту (DOU, Djinni)."""
     first = (facts or "").strip().splitlines()[0] if (facts or "").strip() else ""
@@ -384,14 +405,16 @@ def _name(facts: str) -> str:
 def check_jobs(watch: dict, judge, sleep=time.sleep, home=None) -> dict:
     """Один запуск вартового вакансій. judge(питання) → відповідь моделі текстом; home: див. collect.
     → {"report": текст для Влада або "" (мовчати), "seen": перевірені посилання, "fit": скільки
-       підійшло, "summary": рядок для /watches, "steps": журнал}"""
+       підійшло, "fits": поля підхожих для трекера (з "url"), "summary": рядок для /watches, "steps": журнал}"""
     found = collect(watch, sleep, home)
     jobs, verdicts = found["jobs"], {}
     for start in range(0, len(jobs), JUDGE_BATCH):
         batch = jobs[start:start + JUDGE_BATCH]
-        for n, yes, why in VERDICT_RE.findall(judge(judge_prompt(watch["goal"], batch)) or ""):
+        for n, yes, rest in VERDICT_RE.findall(judge(judge_prompt(watch["goal"], batch)) or ""):
             if 1 <= int(n) <= len(batch):
-                verdicts[batch[int(n) - 1][0]] = (yes.lower() in ("так", "yes"), _clean(why))
+                link, facts = batch[int(n) - 1]
+                ok = yes.lower() in ("так", "yes")
+                verdicts[link] = (ok, _fit_fields(rest, facts) if ok else _clean(rest))
     fit = [(l, verdicts[l][1]) for l, _ in jobs if l in verdicts and verdicts[l][0]]
     rejected = []
     for link, facts in jobs:                    # назва з коду, якщо модель її в рядку не написала
@@ -408,7 +431,7 @@ def check_jobs(watch: dict, judge, sleep=time.sleep, home=None) -> dict:
                      "; ".join(f"{SITES[_site(s)]}: {n}" for s, n in found["sources"]))
     if fit:
         lines.append(f"Підходять {len(fit)} з {len(jobs)} нових:")
-        lines += [f"- {why}\n  {link}" for link, why in fit]
+        lines += [f"{i}. {f['line']}\n  {link}" for i, (link, f) in enumerate(fit, 1)]
     if unclear:
         lines.append("Модель про ці не відповіла, глянь сам:")
         lines += [f"- {link}" for link in unclear]
@@ -436,7 +459,8 @@ def check_jobs(watch: dict, judge, sleep=time.sleep, home=None) -> dict:
     loud = bool(fit or unclear or first or broken)
     summary = f"{tools.now():%d.%m %H:%M} нових {len(jobs)}, підійшло {len(fit)}"
     return {"report": "\n".join(lines + ["", footer]).strip() if loud else "", "seen": found["checked"],
-            "fit": len(fit), "summary": summary, "steps": found["steps"]}
+            "fit": len(fit), "fits": [dict(f, url=link) for link, f in fit], "summary": summary,
+            "steps": found["steps"]}
 
 
 def listing(watches: list) -> str:

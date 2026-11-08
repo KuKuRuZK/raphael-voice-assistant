@@ -224,7 +224,8 @@ def job_facts(url: str) -> str:
 def facts_of(text: str, head: int = 1) -> str:
     """Факти вакансії з тексту її сторінки: перші head рядків (назва; у LinkedIn ще компанія й
     місто) і рядки з ознаками формату, міста, країн, досвіду, зарплати, мови."""
-    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
+    text = re.sub("[\u200b\u200c\u200d\u2060\ufeff]", "", text or "")     # cvbankas ховає їх між цифрами зарплати
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
     if len(lines) < 3:
         return text
     facts = []

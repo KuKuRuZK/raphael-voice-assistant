@@ -48,7 +48,8 @@ def describe(tool: str, args: dict) -> str:
             "pc_note": f"записати в Obsidian «{args.get('title', '')}»",
             "pc_say": f"сказати вголос: {args.get('text', '')}",
             "pc_page_text": f"прочитати для вартового {args.get('url', '')}",
-            "pc_page_links": f"взяти посилання для вартового {args.get('url', '')}"}.get(tool, tool)
+            "pc_page_links": f"взяти посилання для вартового {args.get('url', '')}",
+            "pc_tracker_add": f"додати в трекер вакансій: {args.get('company', '')}, {args.get('title', '')}"}.get(tool, tool)
     return text.strip()[:160]
 
 

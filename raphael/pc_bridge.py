@@ -9,6 +9,7 @@
 - "auto": робить сама (прочитати публічну сторінку, дописати у «Вхідні», сказати вголос);
 - "ask": лише після кнопки «Так» у Telegram (глянути на екран: знімок бачить модель);
 - вартовим вакансій сторінки з домашньої адреси, коли сайт не пускає сервер (теж "auto");
+- дописати вакансію в трекер Job_Search (кнопка «у трекер»; лише цей файл і лише рядок у кінець);
 - усе інше, і мишка з клавіатурою теж, відмовляє без питань.
 Нічого не видаляє, не надсилає, не запускає програм.
 """
@@ -22,7 +23,7 @@ from raphael import settings as cfg
 log = logging.getLogger("Лін")
 
 TIERS = {"pc_read_page": "auto", "pc_note": "auto", "pc_say": "auto", "pc_look": "ask",
-         "pc_page_text": "auto", "pc_page_links": "auto"}
+         "pc_page_text": "auto", "pc_page_links": "auto", "pc_tracker_add": "auto"}
 RAW = {"pc_page_text", "pc_page_links"}     # JSON для вартового: свій ліміт, обрізати посередині не можна
 RESULT_LIMIT = 6000         # стільки символів результату їде назад на сервер
 POST_TRIES = 3
@@ -95,8 +96,13 @@ def _page_links(job: dict) -> str:
     return json.dumps({"links": links[:400], "error": error}, ensure_ascii=False)
 
 
+def _tracker_add(job: dict) -> str:
+    from raphael import job_tracker            # шлях до файлу з налаштувань ПК, не із завдання
+    return job_tracker.add(job.get("args") or {})
+
+
 _RUN = {"pc_read_page": _read_page, "pc_look": _look, "pc_note": _note, "pc_say": _say,
-        "pc_page_text": _page_text, "pc_page_links": _page_links}
+        "pc_page_text": _page_text, "pc_page_links": _page_links, "pc_tracker_add": _tracker_add}
 
 
 def execute(job: dict, confirm=None) -> str:

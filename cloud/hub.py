@@ -42,6 +42,8 @@ HOME_SEEN = 5               # домашня «вдома», якщо питал
 HOME_GRACE = 15             # стільки секунд повідомлення чекає на домашню, далі відповідає сервер
 LONG_POLL = 25              # скільки тримати запит домашньої, коли нічого нового
 HOME_FETCH_WAIT = 60        # стільки секунд вартовий чекає на сторінку з домашнього ПК
+OFFERS_KEEP = 300           # стільки вакансій під кнопками «у трекер» памʼятаємо
+TRACKER_FIELDS = ("url", "company", "title", "area", "place", "salary", "match", "why")
 
 # Команди бота. Telegram у меню показує лише латиницю, тож українські слова теж розуміємо,
 # але в меню латинські
@@ -163,6 +165,8 @@ class Hub:
         self.tasks = store or tasks_mod.TaskStore(os.path.join(brain_mod.DATA, "tasks.json"))
         self.pc = pc or pcjobs.PcJobs(os.path.join(brain_mod.DATA, "pc_jobs.json"))
         self.pc_waiters = {}        # id завдання для ПК → (Event, [результат]): хто чекає на нього тут же
+        self.offers_path = os.path.join(brain_mod.DATA, "offers.json")   # вакансії під кнопками «у трекер»
+        self.offers_lock = threading.Lock()
         self.agent = agent or agent_mod.Agent(self.tasks, notify=self.say, ask=self.ask_question,
                                               on_finish=self._task_finished, pc=self.send_to_pc)
         self.watches = watches or watch_mod.WatchStore(os.path.join(brain_mod.DATA, "watches.json"))
@@ -209,9 +213,9 @@ class Hub:
         parts += other[-5:]
         return "Поки тебе не було: " + "; ".join(parts) + "."
 
-    def say(self, text: str) -> None:
+    def say(self, text: str, **extra) -> None:
         if self.chat_id:
-            tg.send_message(self.chat_id, tg.plain(text))
+            tg.send_message(self.chat_id, tg.plain(text), **extra)
 
     # ── Доручення ──
     def create_task(self, goal: str, source: str = "telegram") -> str:
@@ -279,7 +283,11 @@ class Hub:
         self.watches.mark_seen(watch["id"], out["seen"], out["fit"], out["summary"])
         self.tasks.update(task["id"], status="done", steps=out["steps"], result=out["report"] or out["summary"])
         if out["report"]:
-            self.say(f"👀 Вартовий #{watch['id']}: {name}\n\n{out['report']}")
+            buttons = [[{"text": f"📌 {i}. {(f.get('company') or f.get('title') or 'вакансія')[:28]} у трекер",
+                         "callback_data": f"tr:{self.offer_add(f, watch['id'])}"}]
+                       for i, f in enumerate(out.get("fits", [])[:10], 1)]
+            extra = {"reply_markup": {"inline_keyboard": buttons}} if buttons else {}
+            self.say(f"👀 Вартовий #{watch['id']}: {name}\n\n{out['report']}", **extra)
             self.note_away(f"вартовий «{name[:40]}» знайшов нове")
         log.info(f"Вартовий #{watch['id']}: {out['summary']}{'' if out['report'] else ', мовчу'}")
 
@@ -308,11 +316,77 @@ class Hub:
             waiter[1].append(result)
             waiter[0].set()
             return True
+        if job["tool"] == "pc_tracker_add":
+            added = result.startswith(("Додала", "Уже є"))
+            with self.offers_lock:
+                data = self._json(self.offers_path, {"next": 1, "items": {}})
+                for item in data["items"].values():
+                    if item.get("job") == job["id"]:
+                        item["status"] = "added" if added else "new"     # не вийшло: кнопка знову діє
+                self._write(self.offers_path, data)
+            self.say(f"📌 {result}")
+            return True
         task = self.tasks.get(job["task_id"])
         if task and task["status"] == "waiting_pc" and task.get("pending_call") == job["call_id"]:
             log.info(f"Справа #{task['id']}: ПК відповів, продовжую")
             self.task_queue.put((task["id"], {"pc": result}))
         return True
+
+    # ── Вакансії в трекер: кнопка під звітом вартового ──
+    def offer_add(self, fit: dict, watch_id) -> int:
+        """Підхожа вакансія під кнопкою «у трекер» → її номер для callback_data (там лише 64 байти)."""
+        with self.offers_lock:
+            data = self._json(self.offers_path, {"next": 1, "items": {}})
+            oid = data["next"]
+            data["next"] += 1
+            data["items"][str(oid)] = {**{k: fit.get(k, "") for k in TRACKER_FIELDS}, "watch_id": watch_id,
+                                       "status": "new"}
+            for old in sorted(data["items"], key=int)[:-OFFERS_KEEP]:
+                data["items"].pop(old)
+            self._write(self.offers_path, data)
+            return oid
+
+    def tracker_button(self, callback: dict) -> None:
+        """«📌 у трекер»: завдання для ПК дописати рядок у Job_Search/vacancies_master.csv.
+        ПК вимкнений: завдання чекає, рядок зʼявиться, щойно він увімкнеться."""
+        data = callback.get("data") or ""
+        oid = data[3:]
+        with self.offers_lock:
+            offers = self._json(self.offers_path, {"next": 1, "items": {}})
+            item = offers["items"].get(oid)
+            if not item:
+                note = "Ця кнопка вже не діє"
+            elif item["status"] == "added":
+                note = "Уже в трекері"
+            elif item["status"] == "queued":
+                note = "Уже в черзі на трекер"
+            else:
+                job = self.pc.add(None, "", "pc_tracker_add", {k: item.get(k, "") for k in TRACKER_FIELDS})
+                item.update(status="queued", job=job["id"])
+                self._write(self.offers_path, offers)
+                note = None
+        if note is None:
+            if self.router.home_online():
+                self.router.nudge()
+                note = "Додаю в трекер"
+            else:
+                note = "Комп вимкнений: додам у трекер, щойно ввімкнеш"
+            msg = callback.get("message") or {}
+            keyboard = (msg.get("reply_markup") or {}).get("inline_keyboard") or []
+            for row in keyboard:
+                for button in row:
+                    if button.get("callback_data") == data:
+                        button["text"] = "🕐" + button.get("text", "")[1:]
+            if msg and keyboard:
+                try:
+                    tg.api("editMessageReplyMarkup", chat_id=msg["chat"]["id"], message_id=msg["message_id"],
+                           reply_markup={"inline_keyboard": keyboard})
+                except Exception as e:
+                    log.debug(f"Кнопка трекера: {tg._hide_token(e)}")
+        try:
+            tg.api("answerCallbackQuery", callback_query_id=callback["id"], text=note)
+        except Exception as e:
+            log.debug(f"Кнопка трекера: {tg._hide_token(e)}")
 
     def fetch_via_home(self, kind: str, url: str):
         """Сторінка для вартового з домашнього ПК, з очікуванням: kind "links" чи "text".
@@ -557,6 +631,8 @@ class Hub:
             self.server_queue.put(message)
 
     def on_button(self, callback: dict) -> None:
+        if (callback.get("data") or "").startswith("tr:"):    # «у трекер» під звітом вартового: кнопка хаба
+            return self.tracker_button(callback)
         if self.router.home_online():
             self.router.give_home({"callback_query": callback})
             return

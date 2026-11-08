@@ -271,6 +271,10 @@ DAILY_LIMITS = {
 # ключем BRAIN_VAULT у config.json
 BRAIN_VAULT = os.path.expandvars(r"%USERPROFILE%\OneDrive\Документы\memory\memory")
 
+# Трекер вакансій (джерело правди для /apply-jobs): кнопка «у трекер» під звітом вартового
+# дописує сюди рядок через міст до ПК (raphael/job_tracker.py). Інший шлях: JOB_TRACKER_CSV у config.json
+JOB_TRACKER_CSV = os.path.expandvars(r"%USERPROFILE%\OneDrive\Документы\Job_Search\vacancies_master.csv")
+
 BRIEFING_HOUR = 7                    # година ранкового дайджесту
 CALENDAR_TZ   = "Europe/Vilnius"     # часовий пояс нових подій у календарі
 CALENDAR_REMIND_MINUTES = 10         # за скільки хвилин нагадувати про подію (0 = ні)
@@ -376,7 +380,7 @@ def _load_config():
         "SYS_MONITOR_ENABLED", "SYS_MONITOR_INTERVAL", "MONITOR_INTERVAL",
         "VISION_MODEL", "VISION_FALLBACK_MODEL", "CALENDAR_TZ", "CALENDAR_REMIND_MINUTES",
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
-        "FAST_MODEL", "WAKE_ENGINE", "WAKE_WORDS_FIRST", "BRAIN_VAULT", "DIARY_DIR",
+        "FAST_MODEL", "WAKE_ENGINE", "WAKE_WORDS_FIRST", "BRAIN_VAULT", "DIARY_DIR", "JOB_TRACKER_CSV",
         "OFFLINE_MODEL", "PIPER_EXE", "PIPER_MODEL", "TOOL_CALLING",
         "PERSONA_FILE", "TTS_ENGINE", "TTS_HTTP_URL", "TTS_HTTP_MODEL", "TTS_HTTP_VOICE", "TTS_HTTP_SERVER",
         "VIBE_ENABLED", "VIBE_INTERVAL", "VIBE_MAX_PER_HOUR", "VIBE_GAME_EVERY_MIN",
