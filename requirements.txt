@@ -29,6 +29,7 @@ google-auth-oauthlib
 google-auth-httplib2
 slack_sdk
 ddgs                        # тихий веб-пошук
+defusedxml                  # безпечний розбір стрічок новин (raphael/news.py)
 uiautomation                # що за елемент під курсором (screen_agent): імʼя, поле пароля
 
 # Тести (не потрібні для роботи)

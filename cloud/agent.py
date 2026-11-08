@@ -34,6 +34,10 @@ TOOLS = [
         "name": "search", "description": "Пошук в інтернеті. Повертає заголовки, уривки й посилання.",
         "parameters": {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]}}},
     {"type": "function", "function": {
+        "name": "news", "description": "Свіжі новини за добу зі стрічок (BBC, Українська правда, УНІАН) з датами "
+                                       "й посиланнями; тема необовʼязкова.",
+        "parameters": {"type": "object", "properties": {"topic": {"type": "string"}}}}},
+    {"type": "function", "function": {
         "name": "read_page", "description": "Прочитати текст сторінки за посиланням (з пошуку).",
         "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
     {"type": "function", "function": {
@@ -144,6 +148,8 @@ class Agent:
             return tools.search(args.get("query", ""), limit=6)
         if name == "read_page":
             return tools.read_page(args.get("url", ""))
+        if name == "news":
+            return tools.news(args.get("topic", ""))
         return f"Нема такого інструмента: {name}"
 
     def run(self, task_id, answer: str = None) -> None:
@@ -183,8 +189,8 @@ class Agent:
                         self.store.update(task_id, question_msg=self.ask(self.store.get(task_id), question))
                         return
                     result = self._tool(name, args)
-                    steps.append(f"{'шукаю' if name == 'search' else 'читаю'}: "
-                                 f"{(args.get('query') or args.get('url') or '')[:80]}")
+                    verb = {"search": "шукаю", "read_page": "читаю", "news": "новини"}.get(name, name)
+                    steps.append(f"{verb}: {(args.get('query') or args.get('url') or args.get('topic') or '')[:80]}")
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": result[:RESULT_LIMIT]})
                 self.store.update(task_id, messages=messages, steps=steps)
             # Кроки скінчились: підсумок того, що встигла

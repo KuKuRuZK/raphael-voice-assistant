@@ -12,6 +12,32 @@ from raphael import tts
 log = logging.getLogger("Лін")
 
 
+def _news(topic: str = "") -> None:
+    """Дія news: свіжі новини зі стрічок (raphael/news.py), переказ голосом чи в Telegram."""
+    tts.speak("Гляну стрічки...")
+
+    def _run():
+        from raphael import news
+        try:
+            items = news.headlines(topic)
+            if not items:
+                tts.speak("У стрічках за добу нічого не знайшла" + (f" про «{topic}»." if topic else "."))
+                return
+            log.info(f"Новини{' про ' + topic if topic else ''}: {len(items)} заголовків")
+            # Переказ завжди хмарною моделлю: локальна на довгому списку думає довго
+            answer = tts.speak_stream(llm.llm_stream(
+                cfg.GROQ_PRIMARY_MODEL,
+                messages=[{"role": "user", "content": f"{news.RETELL}\n\n{news.digest(items)}"}],
+                max_tokens=500, temperature=0.3,
+            ))
+            log.info(f"Новини: {answer[:120]}")
+        except Exception as e:
+            log.error(f"Новини: {e}", exc_info=True)
+            tts.speak("Не вдалося дістати новини.")
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _silent_web_search(query: str):
     """Тихий пошук без відкриття браузера. Результат зачитується вголос."""
     tts.speak("Шукаю...")

@@ -24,7 +24,7 @@ _COMMAND_HINTS = (
     "постав", "грай", "відтвори", "пауза", "зупини", "наступн", "попередн",
     "гучніше", "тихіше", "гучність", "голосніше", "тихше", "звук",
     "погода", "таймер", "нагадай", "скріншот", "заблокуй", "перезавантаж",
-    "спотіфай", "spotify", "дискорд", "телег", "хром", "браузер", "доруч", "розберись",
+    "спотіфай", "spotify", "дискорд", "телег", "хром", "браузер", "доруч", "розберись", "новин",
     "що на екрані", "сховай", "згорни", "розгорни", "перемкни",
     "що в пошті", "плейлист", "шафл", "перемішай", "стеж за",
     # Whisper пише і «плейліст»; «почати грати … спочатку» до 2026-11-03 йшло локальній
@@ -430,7 +430,7 @@ class BadLocalReply(Exception):
 _LOCAL_TALK_ACTIONS = (
     "get_time", "weather", "calendar_today", "calendar_tomorrow", "calendar_week",
     "gmail_unread", "gmail_latest", "slack_unread", "spotify_current", "system_info",
-    "note_list", "diary_find", "usage_report",
+    "note_list", "diary_find", "usage_report", "news",
     "mail_watch",                       # лише чекає лист: Gemma сама ставить його на «повідом, коли напишуть»
 )
 
@@ -615,7 +615,7 @@ _ACTION_PREFIXES = (
     "screen_", "focus_", "memory_", "volume_", "window_", "notepad_",
     "claude_", "ask_", "kill_", "type_", "voice_", "timer", "weather",
     "currency", "hotkey", "shutdown", "get_time", "minimize_", "close_",
-    "vibe_", "avatar", "usage_", "diary_", "later", "mail_", "tg_", "task_",
+    "vibe_", "avatar", "usage_", "diary_", "later", "mail_", "tg_", "task_", "news",
 )
 
 # Дія в дужках, але без двокрапки: «[gmail_unread]»

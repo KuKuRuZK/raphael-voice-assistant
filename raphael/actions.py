@@ -614,6 +614,9 @@ def execute_action(action_str: str):
             tts.speak(usage.report_text())
             return
 
+        elif t == "news":
+            web._news(p)
+
         elif t == "web_search":
             web._silent_web_search(p)
             return
