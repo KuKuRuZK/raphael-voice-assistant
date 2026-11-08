@@ -230,11 +230,17 @@ def _facts_url(link: str) -> str:
     return f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{m[1]}" if m else link
 
 
+def _refused(error) -> bool:
+    """Сайт не пускає саме сервер (обмеження, заборона, мережа), а не «вакансію зняли»."""
+    return bool(error) and ("429" in error or "403" in error or "не відкрилась" in error)
+
+
 class _Pace:
     """Пауза перед повторним запитом до того самого сайту, а на 429 ще одна спроба після довшої."""
 
     def __init__(self, sleep):
         self.sleep, self.used, self.retried = sleep, set(), set()
+        self.via_home, self.home_failed, self.home_pages = set(), set(), 0
 
     def __call__(self, url: str) -> None:
         site = _site(url)
@@ -242,11 +248,25 @@ class _Pace:
             self.sleep(PAUSE.get(site, PAUSE_DEFAULT))
         self.used.add(site)
 
-    def fetch(self, get, url: str):
-        """get(url) → (щось, причина або None); один повтор на сайт за запуск, якщо відповів 429."""
-        self(url)
-        got, error = get(url)
+    def fetch(self, get, url: str, home=None):
+        """get(url) → (щось, причина або None). Сайт не пускає сервер, а ПК на звʼязку: те саме
+        з домашньої адреси (home), і далі весь цей сайт за запуск уже через ПК (2026-11-08 LinkedIn
+        пускав сервер ≈20 запитів, і 59 вакансій лишились неперевіреними). Без ПК: один повтор
+        на сайт за запуск, якщо відповів 429."""
         site = _site(url)
+        self(url)
+        if site in self.via_home:
+            got, error = home(url)
+            self.home_pages += error is None
+            return got, error
+        got, error = get(url)
+        if _refused(error) and home and site not in self.home_failed:
+            got_home, error_home = home(url)
+            if error_home is None:
+                self.via_home.add(site)
+                self.home_pages += 1
+                return got_home, None
+            self.home_failed.add(site)
         if error and "429" in error and site not in self.retried:
             self.retried.add(site)
             self.sleep(RETRY_429)
@@ -254,14 +274,18 @@ class _Pace:
         return got, error
 
 
-def collect(watch: dict, sleep=time.sleep) -> dict:
+def collect(watch: dict, sleep=time.sleep, home=None) -> dict:
     """Нові вакансії зі списків вартового, кожна з фактами з її власної сторінки.
     → {"jobs": [(посилання, факти)], "checked": що запамʼятати, "later": скільки нових на потім,
-       "sources": [(список, скільки вакансій або причина)], "blocked": сайти, що обмежили, "steps": журнал}"""
+       "sources": [(список, скільки вакансій або причина)], "blocked": сайти, що обмежили, "steps": журнал,
+       "via_home": сайти, читані через домашній ПК}
+    home(вид, адреса) → (посилання чи текст, None) або (порожнє, причина): сторінка з домашнього ПК."""
     seen, pace = set(watch.get("seen") or []), _Pace(sleep)
+    home_links = (lambda url: home("links", url)) if home else None
+    home_text = (lambda url: home("text", url)) if home else None
     groups, sources, steps = [], [], []
     for src in job_sources(watch["goal"]):
-        hrefs, error = pace.fetch(tools.page_links, src)
+        hrefs, error = pace.fetch(tools.page_links, src, home_links)
         links = list(dict.fromkeys(l for l in map(job_link, hrefs) if l))
         new = [l for l in links if l not in seen]
         sources.append((src, error or len(links)))
@@ -278,8 +302,8 @@ def collect(watch: dict, sleep=time.sleep) -> dict:
         if len(jobs) >= CHECK_PER_RUN or site in blocked:
             later += 1
             continue
-        text, error = pace.fetch(lambda url: tools.page_text(url, limit=20000), _facts_url(link))
-        if error and ("429" in error or "403" in error or "не відкрилась" in error):
+        text, error = pace.fetch(lambda url: tools.page_text(url, limit=20000), _facts_url(link), home_text)
+        if _refused(error):
             blocked.add(site)                   # не запамʼятовуємо: спробуємо наступного разу
             later += 1
             steps.append(f"не відкрилась: {link} ({error})")
@@ -291,8 +315,11 @@ def collect(watch: dict, sleep=time.sleep) -> dict:
         steps.append(f"перевіряю: {link}")
         head = 3 if site == "linkedin.com" else 1
         jobs.append((link, tools.facts_of(text, head=head)[:FACTS_LIMIT]))
+    via_home = sorted(SITES[s] for s in pace.via_home)
+    if via_home:
+        steps.append(f"через домашній ПК ({', '.join(via_home)}): {pace.home_pages} сторінок")
     return {"jobs": jobs, "checked": checked, "later": later, "sources": sources,
-            "blocked": sorted(SITES[s] for s in blocked), "steps": steps}
+            "blocked": sorted(SITES[s] for s in blocked), "steps": steps, "via_home": via_home}
 
 
 def judge_prompt(goal: str, batch: list) -> str:
@@ -330,11 +357,11 @@ def _name(facts: str) -> str:
     return re.sub(r"[\u2014\u2013]", "-", first).strip()[:70]
 
 
-def check_jobs(watch: dict, judge, sleep=time.sleep) -> dict:
-    """Один запуск вартового вакансій. judge(питання) → відповідь моделі текстом.
+def check_jobs(watch: dict, judge, sleep=time.sleep, home=None) -> dict:
+    """Один запуск вартового вакансій. judge(питання) → відповідь моделі текстом; home: див. collect.
     → {"report": текст для Влада або "" (мовчати), "seen": перевірені посилання, "fit": скільки
        підійшло, "summary": рядок для /watches, "steps": журнал}"""
-    found = collect(watch, sleep)
+    found = collect(watch, sleep, home)
     jobs, verdicts = found["jobs"], {}
     for start in range(0, len(jobs), JUDGE_BATCH):
         batch = jobs[start:start + JUDGE_BATCH]
@@ -379,6 +406,8 @@ def check_jobs(watch: dict, judge, sleep=time.sleep) -> dict:
         footer += f"; ще {found['later']} нових перевірю наступного разу"
     if found["blocked"]:
         footer += f" ({', '.join(found['blocked'])} обмежив запити)"
+    if found["via_home"]:
+        footer += f"; {', '.join(found['via_home'])} читала через домашній ПК"
     footer += "."
     loud = bool(fit or unclear or first or broken)
     summary = f"{tools.now():%d.%m %H:%M} нових {len(jobs)}, підійшло {len(fit)}"

@@ -46,7 +46,9 @@ def describe(tool: str, args: dict) -> str:
     text = {"pc_look": f"глянути на екран: {args.get('question', '')}",
             "pc_read_page": f"відкрити з дому {args.get('url', '')}",
             "pc_note": f"записати в Obsidian «{args.get('title', '')}»",
-            "pc_say": f"сказати вголос: {args.get('text', '')}"}.get(tool, tool)
+            "pc_say": f"сказати вголос: {args.get('text', '')}",
+            "pc_page_text": f"прочитати для вартового {args.get('url', '')}",
+            "pc_page_links": f"взяти посилання для вартового {args.get('url', '')}"}.get(tool, tool)
     return text.strip()[:160]
 
 
@@ -123,9 +125,17 @@ class PcJobs:
             j = data["jobs"].get(str(job_id))
             if not j or j["status"] in ("done", "cancelled"):
                 return None
-            j["status"], j["result"] = "done", str(result or "")[:20000]
+            j["status"], j["result"] = "done", str(result or "")[:60000]
             self._save(data)
             return dict(j)
+
+    def cancel(self, job_id) -> None:
+        with self.lock:
+            data = self._load()
+            j = data["jobs"].get(str(job_id))
+            if j and j["status"] in ("queued", "sent"):
+                j["status"] = "cancelled"
+                self._save(data)
 
     def cancel_task(self, task_id) -> int:
         with self.lock:

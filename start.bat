@@ -11,6 +11,8 @@ set /a fails=0
 :loop
 if exist ".lin_alive" del ".lin_alive"
 start /wait "" pythonw "%~dp0lin.py"
+REM Exit code 3: a second copy found Lin already running and quit - do not restart it.
+if %errorlevel% EQU 3 goto end
 
 REM .lin_stop marker means the user quit on purpose - do not restart.
 if exist ".lin_stop" goto cleanstop

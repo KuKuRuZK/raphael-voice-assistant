@@ -41,6 +41,7 @@ PORT = int(os.environ.get("LIN_HUB_PORT", 8790))
 HOME_SEEN = 5               # домашня «вдома», якщо питала щонайбільше стільки секунд тому
 HOME_GRACE = 15             # стільки секунд повідомлення чекає на домашню, далі відповідає сервер
 LONG_POLL = 25              # скільки тримати запит домашньої, коли нічого нового
+HOME_FETCH_WAIT = 60        # стільки секунд вартовий чекає на сторінку з домашнього ПК
 
 # Команди бота. Telegram у меню показує лише латиницю, тож українські слова теж розуміємо,
 # але в меню латинські
@@ -161,6 +162,7 @@ class Hub:
         self.told_offline = False   # «комп вимкнений» кажемо раз на кожну відсутність
         self.tasks = store or tasks_mod.TaskStore(os.path.join(brain_mod.DATA, "tasks.json"))
         self.pc = pc or pcjobs.PcJobs(os.path.join(brain_mod.DATA, "pc_jobs.json"))
+        self.pc_waiters = {}        # id завдання для ПК → (Event, [результат]): хто чекає на нього тут же
         self.agent = agent or agent_mod.Agent(self.tasks, notify=self.say, ask=self.ask_question,
                                               on_finish=self._task_finished, pc=self.send_to_pc)
         self.watches = watches or watch_mod.WatchStore(os.path.join(brain_mod.DATA, "watches.json"))
@@ -263,7 +265,7 @@ class Hub:
         self.tasks.update(task["id"], status="working")
         name = watch_mod.title(watch["goal"])
         try:
-            out = watch_mod.check_jobs(watch, self.judge)
+            out = watch_mod.check_jobs(watch, self.judge, home=self.fetch_via_home)
         except agent_mod.Unavailable as e:
             log.warning(f"Вартовий #{watch['id']}: моделі не відповіли: {e}")
             self.tasks.update(task["id"], status="failed", result=f"Моделі не відповіли: {e}")
@@ -301,11 +303,40 @@ class Hub:
         job = self.pc.finish(job_id, result)
         if not job:
             return False
+        waiter = self.pc_waiters.get(job["id"])
+        if waiter:                                          # сторінка для вартового: він чекає тут же
+            waiter[1].append(result)
+            waiter[0].set()
+            return True
         task = self.tasks.get(job["task_id"])
         if task and task["status"] == "waiting_pc" and task.get("pending_call") == job["call_id"]:
             log.info(f"Справа #{task['id']}: ПК відповів, продовжую")
             self.task_queue.put((task["id"], {"pc": result}))
         return True
+
+    def fetch_via_home(self, kind: str, url: str):
+        """Сторінка для вартового з домашнього ПК, з очікуванням: kind "links" чи "text".
+        → (посилання чи текст, None) або (порожнє, причина). ПК вимкнений: одразу причина."""
+        empty = [] if kind == "links" else ""
+        if not self.router.home_online():
+            return empty, "ПК вимкнений"
+        job = self.pc.add(None, "", "pc_page_links" if kind == "links" else "pc_page_text", {"url": url})
+        done, box = threading.Event(), []
+        self.pc_waiters[job["id"]] = (done, box)
+        self.router.nudge()
+        try:
+            if not done.wait(HOME_FETCH_WAIT):
+                self.pc.cancel(job["id"])
+                return empty, "ПК не відповів"
+        finally:
+            self.pc_waiters.pop(job["id"], None)
+        try:
+            data = json.loads(box[0])
+        except (ValueError, TypeError):
+            return empty, f"ПК відповів незрозуміло: {str(box[0])[:80]}"
+        if data.get("error"):
+            return empty, data["error"]
+        return (data.get("links") or []) if kind == "links" else (data.get("text") or ""), None
 
     def watch_loop(self) -> None:
         while not self.stop.wait(30):

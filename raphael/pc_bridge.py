@@ -8,9 +8,11 @@
 його агента можна підбурити. Тому з сервера на ПК можна лише те, що в TIERS:
 - "auto": робить сама (прочитати публічну сторінку, дописати у «Вхідні», сказати вголос);
 - "ask": лише після кнопки «Так» у Telegram (глянути на екран: знімок бачить модель);
+- вартовим вакансій сторінки з домашньої адреси, коли сайт не пускає сервер (теж "auto");
 - усе інше, і мишка з клавіатурою теж, відмовляє без питань.
 Нічого не видаляє, не надсилає, не запускає програм.
 """
+import json
 import logging
 import queue
 import threading
@@ -19,7 +21,9 @@ from raphael import settings as cfg
 
 log = logging.getLogger("Лін")
 
-TIERS = {"pc_read_page": "auto", "pc_note": "auto", "pc_say": "auto", "pc_look": "ask"}
+TIERS = {"pc_read_page": "auto", "pc_note": "auto", "pc_say": "auto", "pc_look": "ask",
+         "pc_page_text": "auto", "pc_page_links": "auto"}
+RAW = {"pc_page_text", "pc_page_links"}     # JSON для вартового: свій ліміт, обрізати посередині не можна
 RESULT_LIMIT = 6000         # стільки символів результату їде назад на сервер
 POST_TRIES = 3
 
@@ -77,7 +81,22 @@ def _say(job: dict) -> str:
     return "Сказала вголос."
 
 
-_RUN = {"pc_read_page": _read_page, "pc_look": _look, "pc_note": _note, "pc_say": _say}
+def _page_text(job: dict) -> str:
+    """Текст сторінки для вартового вакансій, JSON {"text", "error"}."""
+    from cloud import tools
+    text, error = tools.page_text((job.get("args") or {}).get("url", ""), limit=15000)
+    return json.dumps({"text": text, "error": error}, ensure_ascii=False)
+
+
+def _page_links(job: dict) -> str:
+    """Посилання сторінки зі списком вакансій, JSON {"links", "error"}."""
+    from cloud import tools
+    links, error = tools.page_links((job.get("args") or {}).get("url", ""))
+    return json.dumps({"links": links[:400], "error": error}, ensure_ascii=False)
+
+
+_RUN = {"pc_read_page": _read_page, "pc_look": _look, "pc_note": _note, "pc_say": _say,
+        "pc_page_text": _page_text, "pc_page_links": _page_links}
 
 
 def execute(job: dict, confirm=None) -> str:
@@ -96,7 +115,8 @@ def execute(job: dict, confirm=None) -> str:
             return "Влад не дозволив (або не відповів за 2 хвилини). Без цього обійдись або спитай його."
     log.info(f"Міст: {_describe(tool, args)[:100]}")
     try:
-        return (_RUN[tool](job) or "Готово.")[:RESULT_LIMIT]
+        out = _RUN[tool](job) or "Готово."
+        return out if tool in RAW else out[:RESULT_LIMIT]
     except Exception as e:
         log.error(f"Міст: {tool} впало: {e}", exc_info=True)
         return f"На ПК не вийшло: {type(e).__name__}."

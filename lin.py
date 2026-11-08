@@ -146,6 +146,9 @@ def _ensure_single_instance():
         return False
 
 
+DUPLICATE_EXIT = 3          # «я друга копія»: start.bat на це не перезапускає (див. start.bat)
+
+
 def main():
     # ── Завантажуємо налаштування користувача (config.json) ───
     cfg._load_config()
@@ -154,18 +157,13 @@ def main():
 
     # ── Захист від подвійного запуску ─────────────────────────
     if not _ensure_single_instance():
-        # Маркер ставимо ДО діалогу: інакше watchdog у start.bat сприйме наш вихід
-        # як падіння і підніме копію знову — нескінченний цикл вікон.
-        # start.bat сам видалить маркер у гілці :cleanstop.
-        try:
-            with open(cfg.STOP_MARKER, "w", encoding="utf-8") as _f:
-                _f.write("duplicate instance")
-        except Exception:
-            pass
+        # Код виходу DUPLICATE_EXIT каже start.bat «це була друга копія, не перезапускай». Раніше
+        # друга копія писала .lin_stop, а він спільний: 2026-11-08 так вимкнувся перезапуск уже
+        # живої Лін, і після наступного збою вона б не піднялась.
         import ctypes
         ctypes.windll.user32.MessageBoxW(0, "Лін вже запущена!\nЗакрий попередню копію через трей.",
                                          "Лін", 0x30)                     # значок «увага»
-        sys.exit(0)
+        sys.exit(DUPLICATE_EXIT)
 
     # Прибираємо маркер зупинки (ми ж щойно стартували)
     try:

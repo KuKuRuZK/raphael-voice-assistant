@@ -1,5 +1,6 @@
 """Етап 4: міст до ПК. Агент на сервері просить, домашня Лін робить за своїми правилами."""
 import json
+import pathlib
 import threading
 import time
 import urllib.request
@@ -290,3 +291,106 @@ def test_home_gets_jobs_from_the_hub_answer(monkeypatch):
     monkeypatch.setattr(cfg, "TELEGRAM_BOT_TOKEN", "123:abc")
     monkeypatch.setattr(httpx, "get", lambda *a, **k: R())
     assert tg_lin._take_from_hub() == ([{"message": {"text": "привіт"}}], [{"id": 1, "tool": "pc_say"}])
+
+
+# ── Вартовий через домашній ПК (етап 5) ──────────────────────────────────────
+
+LI = "https://www.linkedin.com/jobs/search/?keywords=Python&location=Vilnius"
+LI_GUEST = "https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?keywords=Python&location=Vilnius"
+POSTING = "https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{}"
+
+
+@pytest.fixture
+def server_blocked(monkeypatch):
+    """Сервер LinkedIn не пускає (429), а домашня адреса пускає."""
+    asked_home = []
+    monkeypatch.setattr(tools, "page_links", lambda url: ([], "Сторінка відповіла 429."))
+    monkeypatch.setattr(tools, "page_text", lambda url, limit=10000: ("", "Сторінка відповіла 429."))
+
+    def home(kind, url):
+        asked_home.append((kind, url))
+        if kind == "links":
+            return [f"https://lt.linkedin.com/jobs/view/job-{n}?position=1" for n in (1000001, 1000002)], None
+        return "AI Engineer\nDATAHEAD\nVilnius, Lithuania\nHybrid\n", None
+    return home, asked_home
+
+
+def test_watcher_reads_through_home_when_server_is_refused(server_blocked):
+    from cloud import watchers as watch_mod
+    home, asked_home = server_blocked
+    pauses = []
+    out = watch_mod.check_jobs({"id": 2, "goal": f"AI {LI}", "seen": []},
+                               lambda p: "1 | так | AI Engineer, DATAHEAD: гібрид у Вільнюсі\n2 | ні | senior",
+                               sleep=pauses.append, home=home)
+    assert asked_home == [("links", LI_GUEST), ("text", POSTING.format(1000001)), ("text", POSTING.format(1000002))]
+    assert watch_mod.RETRY_429 not in pauses                     # чекати 30 с не треба: є ПК
+    assert out["seen"] == ["https://www.linkedin.com/jobs/view/1000001/", "https://www.linkedin.com/jobs/view/1000002/"]
+    assert "LinkedIn читала через домашній ПК" in out["report"] and "Підходять 1 з 2" in out["report"]
+    assert any("через домашній ПК (LinkedIn): 3 сторінок" in s for s in out["steps"])
+
+
+def test_watcher_without_pc_falls_back_to_waiting(server_blocked):
+    from cloud import watchers as watch_mod
+    pauses = []
+    out = watch_mod.check_jobs({"id": 2, "goal": f"AI {LI}", "seen": ["x"]}, lambda p: "",
+                               sleep=pauses.append, home=lambda kind, url: ([] if kind == "links" else "", "ПК вимкнений"))
+    assert watch_mod.RETRY_429 in pauses and out["seen"] == []
+    assert "Жодна сторінка зі списком не відкрилась" in out["report"]
+
+
+def test_hub_fetches_a_page_through_home_and_waits_for_it(hub):
+    h, _ = hub
+    assert h.fetch_via_home("text", "https://x.lt/") == ("", "ПК вимкнений")
+    h.router.take_home(wait=0)                                          # домашня на звʼязку
+
+    def home_side():
+        deadline = time.monotonic() + 5
+        while not h.pc.has_pending() and time.monotonic() < deadline:
+            time.sleep(0.01)
+        [job] = h.pc.for_home()
+        assert job["tool"] == "pc_page_links"
+        h.pc_done(job["id"], json.dumps({"links": ["https://djinni.co/jobs/1-a/"], "error": None}))
+    t = threading.Thread(target=home_side)
+    t.start()
+    assert h.fetch_via_home("links", "https://djinni.co/jobs/") == (["https://djinni.co/jobs/1-a/"], None)
+    t.join(timeout=5)
+    assert h.task_queue.empty() and h.pc_waiters == {}
+
+
+def test_hub_gives_up_on_silent_home(hub, monkeypatch):
+    h, _ = hub
+    monkeypatch.setattr(hub_mod, "HOME_FETCH_WAIT", 0.2)
+    h.router.take_home(wait=0)
+    assert h.fetch_via_home("text", "https://x.lt/") == ("", "ПК не відповів")
+    assert h.pc.for_home() == [] and h.pc_waiters == {}                 # завдання прибране, не висить
+
+
+def test_home_gives_watcher_pages_whole_and_only_public(bridge, monkeypatch):
+    long_text = "Python " * 3000                                        # довше за звичайний ліміт 6000
+    monkeypatch.setattr(tools, "page_text", lambda url, limit=10000: (long_text[:limit], None))
+    out = json.loads(bridge.execute({"id": 1, "tool": "pc_page_text", "args": {"url": "https://x.lt/"}}))
+    assert out == {"text": long_text[:15000], "error": None}
+    monkeypatch.undo()
+    import httpx
+    monkeypatch.setattr(httpx, "get", lambda *a, **k: pytest.fail("до домашньої мережі не мало дійти"))
+    monkeypatch.setattr(cfg, "TELEGRAM_ALLOWED_IDS", [111])
+    out = json.loads(bridge.execute({"id": 2, "tool": "pc_page_links", "args": {"url": "http://192.168.0.1/"}}))
+    assert out["links"] == [] and "не читаю" in out["error"]
+
+
+def test_second_copy_leaves_watchdog_alone(lin, tmp_path, monkeypatch):
+    """2026-11-08 друга копія записала .lin_stop, і живу Лін після збою вже ніхто б не підняв."""
+    import ctypes
+    marker = tmp_path / ".lin_stop"
+    monkeypatch.setattr(lin.cfg, "STOP_MARKER", str(marker))
+    monkeypatch.setattr(lin.cfg, "_load_config", lambda: None)
+    monkeypatch.setattr(lin.stt, "apply_settings", lambda: None)
+    monkeypatch.setattr(lin.tts, "apply_settings", lambda: None)
+    monkeypatch.setattr(lin, "_ensure_single_instance", lambda: False)
+    shown = []
+    monkeypatch.setattr(ctypes.windll.user32, "MessageBoxW", lambda *a: shown.append(a[1]))
+    with pytest.raises(SystemExit) as e:
+        lin.main()
+    assert e.value.code == lin.DUPLICATE_EXIT == 3 and not marker.exists() and "вже запущена" in shown[0]
+    bat = (pathlib.Path(lin.__file__).parent / "start.bat").read_text()
+    assert "if %errorlevel% EQU 3 goto end" in bat
