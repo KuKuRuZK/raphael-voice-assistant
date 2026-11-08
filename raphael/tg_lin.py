@@ -292,6 +292,17 @@ def watch(text: str) -> str:
         return "Не достукалась до сервера, вартового не поставила."
 
 
+def mail_sweep() -> str:
+    """Дія mail_sweep: розбір пошти робить сервер (там ключі й черга), звіт у Telegram."""
+    if not cfg.CLOUD_SSH:
+        return "Розбір пошти працює через сервер, а його в мене не налаштовано."
+    try:
+        return _hub("POST", "/mail/sweep", {}).get("text") or "Розбираю пошту."
+    except Exception as e:
+        log.warning(f"Хаб: розбір пошти: {type(e).__name__}: {e}")
+        return "Не достукалась до сервера, пошту не розібрала."
+
+
 AWAY_DELAY = 25             # с після старту: спершу привітання, потім «поки тебе не було»
 
 

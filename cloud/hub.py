@@ -53,12 +53,14 @@ COMMANDS = {
     "watches": "watches", "вартові": "watches",
     "unwatch": "unwatch", "нестеж": "unwatch",
     "brief": "brief", "ранок": "brief",
+    "mail": "mail", "пошта": "mail", "розбери": "mail",
 }
 MENU = [("task", "доручити справу: /task що зробити"), ("tasks", "мої доручення"),
         ("show", "кроки справи: /show номер"), ("cancel", "скасувати: /cancel номер"),
         ("retry", "продовжити справу, що стала: /retry номер"),
         ("watch", "вартовий: /watch щодня 09:00 що шукати"), ("watches", "мої вартові"),
-        ("unwatch", "прибрати вартового: /unwatch номер"), ("brief", "ранковий звіт: /brief 08:30 чи off")]
+        ("unwatch", "прибрати вартового: /unwatch номер"), ("brief", "ранковий звіт: /brief 08:30 чи off"),
+        ("mail", "розібрати пошту: важливе сюди, усе прочитаним (/mail undo відкат)")]
 BRIEF_DEFAULT = "08:30"     # ранковий звіт у Telegram, якщо Влад не змінив (/brief)
 
 
@@ -156,6 +158,7 @@ class Hub:
         self.away_path = os.path.join(brain_mod.DATA, "away.json")
         if brain is None:
             self.brain.on_watch = self.create_watch
+            self.brain.on_mail_sweep = self.mail_sweep
 
     # ── Налаштування й «поки тебе не було» (файли в data, переживають перезапуск) ──
     def _json(self, path: str, default):
@@ -282,6 +285,24 @@ class Hub:
             log.warning(f"Ранковий звіт: модель не відповіла: {e}")
             return "Доброго ранку! Моделі зараз не відповідають, тож коротко:\n\n" + "\n\n".join(parts)[:3000]
 
+    def mail_sweep(self, source: str = "telegram") -> str:
+        """Розбір пошти у фоні (сотні листів це хвилина-дві), звіт окремим повідомленням."""
+        if not mail_mod.accounts():
+            return "Пошти на сервері нема."
+
+        def _run():
+            try:
+                retell = lambda listing: brain_mod.chat([{"role": "system", "content": brain_mod.persona()},
+                                                         {"role": "user", "content": mail_mod.RETELL + "\n\n" + listing}],
+                                                        max_tokens=700)
+                self.say(mail_mod.sweep(retell))
+                self.note_away("розібрала пошту")
+            except Exception as e:
+                log.error(f"Розбір пошти: {e}", exc_info=True)
+                self.say("📬 Розбір пошти зламався, деталі в журналі сервера.")
+        threading.Thread(target=_run, daemon=True).start()
+        return "📬 Розбираю пошту, за хвилину пришлю, що там важливого."
+
     def mail_loop(self) -> None:
         """Нові важливі листи в Telegram, поки ПК вимкнений (вдома про пошту каже домашня Лін)."""
         watch = mail_mod.MailWatch()
@@ -364,6 +385,15 @@ class Hub:
         elif name == "unwatch":
             gone = number and self.watches.remove(number)
             self.say(f"Вартового #{number} прибрала." if gone else "Нема такого вартового. Список: /watches")
+        elif name == "mail":
+            if rest.lower() in ("undo", "відкат", "поверни"):
+                try:
+                    self.say(mail_mod.undo())
+                except Exception as e:
+                    log.error(f"Відкат пошти: {e}", exc_info=True)
+                    self.say("Відкат не вдався, деталі в журналі сервера.")
+            else:
+                self.say(self.mail_sweep())
         elif name == "brief":
             if re.fullmatch(r"\d{1,2}[:.]\d{2}", rest):
                 hh, mm = re.split(r"[:.]", rest)
@@ -505,7 +535,7 @@ class Hub:
             def do_POST(self):
                 """Домашня Лін доручає голосом: POST /tasks {"goal"} чи /watches {"text": "щоранку ..."}."""
                 path = urllib.parse.urlparse(self.path).path
-                if path not in ("/tasks", "/watches"):
+                if path not in ("/tasks", "/watches", "/mail/sweep"):
                     return self._send(404, {"error": "нема"})
                 if self.headers.get("X-Lin-Key") != key:
                     return self._send(403, {"error": "чужий"})
@@ -513,6 +543,8 @@ class Hub:
                     body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
                 except ValueError:
                     return self._send(400, {"error": "не JSON"})
+                if path == "/mail/sweep":
+                    return self._send(200, {"text": hub.mail_sweep("voice")})
                 if path == "/watches":
                     return self._send(200, {"text": hub.create_watch(str(body.get("text", "")), "voice")})
                 self._send(200, {"text": hub.create_task(str(body.get("goal", "")), body.get("source", "voice"))})
