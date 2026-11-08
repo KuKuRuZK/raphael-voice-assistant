@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import queue
+import re
 import threading
 import time
 import urllib.parse
@@ -27,9 +28,11 @@ from raphael import settings as cfg
 from raphael import tg
 
 from cloud import agent as agent_mod
+from cloud import mail as mail_mod
 from cloud import brain as brain_mod
 from cloud import tasks as tasks_mod
 from cloud import tools
+from cloud import watchers as watch_mod
 
 log = logging.getLogger("Лін")
 
@@ -46,10 +49,17 @@ COMMANDS = {
     "show": "show", "покажи": "show",
     "cancel": "cancel", "скасуй": "cancel",
     "retry": "retry", "повтори": "retry",
+    "watch": "watch", "стеж": "watch", "вартовий": "watch",
+    "watches": "watches", "вартові": "watches",
+    "unwatch": "unwatch", "нестеж": "unwatch",
+    "brief": "brief", "ранок": "brief",
 }
 MENU = [("task", "доручити справу: /task що зробити"), ("tasks", "мої доручення"),
         ("show", "кроки справи: /show номер"), ("cancel", "скасувати: /cancel номер"),
-        ("retry", "продовжити справу, що стала: /retry номер")]
+        ("retry", "продовжити справу, що стала: /retry номер"),
+        ("watch", "вартовий: /watch щодня 09:00 що шукати"), ("watches", "мої вартові"),
+        ("unwatch", "прибрати вартового: /unwatch номер"), ("brief", "ранковий звіт: /brief 08:30 чи off")]
+BRIEF_DEFAULT = "08:30"     # ранковий звіт у Telegram, якщо Влад не змінив (/brief)
 
 
 def _peer_alive(sock) -> bool:
@@ -130,7 +140,7 @@ class Router:
 
 
 class Hub:
-    def __init__(self, router: Router = None, brain=None, store=None, agent=None):
+    def __init__(self, router: Router = None, brain=None, store=None, agent=None, watches=None):
         self.router = router or Router()
         self.brain = brain or brain_mod.Brain(on_task=self.create_task)
         self.server_queue = queue.Queue()
@@ -139,7 +149,50 @@ class Hub:
         self.chat_id = cfg.TELEGRAM_ALLOWED_IDS[0] if cfg.TELEGRAM_ALLOWED_IDS else None
         self.told_offline = False   # «комп вимкнений» кажемо раз на кожну відсутність
         self.tasks = store or tasks_mod.TaskStore(os.path.join(brain_mod.DATA, "tasks.json"))
-        self.agent = agent or agent_mod.Agent(self.tasks, notify=self.say, ask=self.ask_question)
+        self.agent = agent or agent_mod.Agent(self.tasks, notify=self.say, ask=self.ask_question,
+                                              on_finish=self._task_finished)
+        self.watches = watches or watch_mod.WatchStore(os.path.join(brain_mod.DATA, "watches.json"))
+        self.prefs_path = os.path.join(brain_mod.DATA, "prefs.json")
+        self.away_path = os.path.join(brain_mod.DATA, "away.json")
+        if brain is None:
+            self.brain.on_watch = self.create_watch
+
+    # ── Налаштування й «поки тебе не було» (файли в data, переживають перезапуск) ──
+    def _json(self, path: str, default):
+        try:
+            with open(path, encoding="utf-8") as f:
+                return json.load(f)
+        except (FileNotFoundError, ValueError):
+            return default
+
+    def _write(self, path: str, obj) -> None:
+        tmp = path + ".tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(obj, f, ensure_ascii=False)
+        os.replace(tmp, path)
+
+    def note_away(self, event: str) -> None:
+        """Подія, поки ПК вимкнений: домашня перекаже, коли він увімкнеться."""
+        if self.router.home_online():
+            return
+        events = self._json(self.away_path, [])
+        events.append({"at": tools.now().strftime("%H:%M"), "text": event})
+        self._write(self.away_path, events[-30:])
+
+    def away_text(self) -> str:
+        """Що сталось без ПК, одним абзацом, і журнал очищено."""
+        events = self._json(self.away_path, [])
+        if not events:
+            return ""
+        self._write(self.away_path, [])
+        talks = [e for e in events if e["text"].startswith("розмова")]
+        other = [e["text"] for e in events if not e["text"].startswith("розмова")]
+        parts = []
+        if talks:
+            parts.append(f"ти писав мені в Telegram {len(talks)} раз" + ("" if len(talks) == 1 else "и")
+                         + ", я відповідала з сервера")
+        parts += other[-5:]
+        return "Поки тебе не було: " + "; ".join(parts) + "."
 
     def say(self, text: str) -> None:
         if self.chat_id:
@@ -157,6 +210,107 @@ class Hub:
         if source != "telegram":
             self.say(text)                   # з голосу вдома: у Telegram теж видно, що взяла
         return text
+
+    # ── Вартові ──
+    def create_watch(self, text: str, source: str = "telegram") -> str:
+        schedule, goal = watch_mod.parse_schedule(text)
+        if not schedule or len(goal) < 3:
+            return ("Скажи розклад і що шукати: /watch щодня 09:00 нові вакансії Python у Вільнюсі "
+                    "(або «щоранку», «щовечора», «кожні 6 год»).")
+        w = self.watches.add(goal, schedule)
+        self.watches.update(w["id"], next=tools.now().isoformat())     # перша перевірка одразу
+        text = (f"👀 Вартовий #{w['id']} ({watch_mod.describe(schedule)}): {goal}\n"
+                "Першу перевірку роблю зараз, далі пишу лише про нове. Список: /watches")
+        if source != "telegram":
+            self.say(text)
+        return text
+
+    def _task_finished(self, task: dict, report: str) -> bool:
+        """Звіт справи: звичайну хай повідомить агент, вартового вирішуємо тут (тиша, якщо нового нема)."""
+        if not task.get("watch_id"):
+            self.note_away(f"доручення #{task['id']} готове, звіт у Telegram")
+            return False
+        watch = self.watches.get(task["watch_id"])
+        fresh = self.watches.remember(task["watch_id"], report)
+        if watch is None or watch_mod.NOTHING_NEW in report.lower() or (not fresh and "http" in report):
+            log.info(f"Вартовий #{task['watch_id']}: нового нема")
+            return True
+        self.say(f"👀 Вартовий #{watch['id']}: {watch['goal']}\n\n{report}")
+        self.note_away(f"вартовий «{watch['goal'][:40]}» знайшов нове")
+        return True
+
+    def watch_loop(self) -> None:
+        while not self.stop.wait(30):
+            try:
+                for w in self.watches.due():
+                    task = self.tasks.add(watch_mod.task_goal(w), "watch", watch_id=w["id"])
+                    self.task_queue.put((task["id"], None))
+                    log.info(f"Вартовий #{w['id']}: перевірка (справа #{task['id']})")
+            except Exception as e:
+                log.error(f"Вартові: {e}", exc_info=True)
+
+    # ── Ранковий звіт ──
+    def brief_time(self) -> str:
+        return self._json(self.prefs_path, {}).get("brief", BRIEF_DEFAULT)
+
+    def morning_brief(self) -> str:
+        parts = []
+        for name, get in (("Погода", lambda: tools.weather("")), ("Новини", lambda: tools.news(""))):
+            try:
+                parts.append(f"{name}:\n{get()}")
+            except Exception as e:
+                log.warning(f"Ранковий звіт, {name}: {e}")
+        active = [t for t in self.tasks.all() if t["status"] in ("new", "working", "waiting") and not t.get("watch_id")]
+        if active:
+            parts.append("Доручення:\n" + "\n".join(tasks_mod.line(t) for t in active))
+        if mail_mod.accounts():
+            try:
+                parts.append("Пошта:\n" + mail_mod.text(mail_mod.find(limit=6)))
+                parts.append("Календар сьогодні:\n" + mail_mod.events("сьогодні"))
+            except Exception as e:
+                log.warning(f"Ранковий звіт, пошта: {e}")
+        today = [r for r in self.brain.reminders._load() if r["at"][:10] == tools.now().strftime("%Y-%m-%d")]
+        if today:
+            parts.append("Нагадування сьогодні:\n" + "\n".join(f"{r['at'][11:16]} {r['text']}" for r in today))
+        try:
+            return brain_mod.chat([{"role": "system", "content": brain_mod.persona()}, {"role": "user", "content":
+                "Склади Владу короткий ранковий звіт у Telegram: привітайся у своєму стилі, погода одним реченням, "
+                "3-5 головних новин (лише з наведених, з джерелом), важливі листи коротко (хто й про що), події "
+                "календаря, доручення й нагадування, якщо є. Звичайний текст "
+                "без ** і #, до 15 рядків.\n\n" + "\n\n".join(parts)}], max_tokens=700)
+        except Exception as e:
+            log.warning(f"Ранковий звіт: модель не відповіла: {e}")
+            return "Доброго ранку! Моделі зараз не відповідають, тож коротко:\n\n" + "\n\n".join(parts)[:3000]
+
+    def mail_loop(self) -> None:
+        """Нові важливі листи в Telegram, поки ПК вимкнений (вдома про пошту каже домашня Лін)."""
+        watch = mail_mod.MailWatch()
+        while not self.stop.wait(300):
+            if not mail_mod.accounts():
+                continue
+            try:
+                fresh = watch.fresh()                # і з увімкненим ПК: щоб потім не вивалити старе
+                if fresh and not self.router.home_online():
+                    for m in fresh[:5]:
+                        self.say(f"📧 [{m['box']}] {m['from']}: {m['subject']}")
+                    self.note_away(f"прийшло листів: {len(fresh)}")
+            except Exception as e:
+                log.warning(f"Пошта: {type(e).__name__}: {e}")
+
+    def brief_loop(self) -> None:
+        while not self.stop.wait(30):
+            try:
+                at = self.brief_time()
+                prefs = self._json(self.prefs_path, {})
+                today = tools.now().strftime("%Y-%m-%d")
+                if at == "off" or prefs.get("brief_sent") == today or tools.now().strftime("%H:%M") < at:
+                    continue
+                prefs["brief_sent"] = today
+                self._write(self.prefs_path, prefs)
+                self.say(self.morning_brief())
+                self.note_away("надіслала ранковий звіт")
+            except Exception as e:
+                log.error(f"Ранковий звіт: {e}", exc_info=True)
 
     def ask_question(self, task: dict, question: str):
         """Питання агента Владу: відповідь реплаєм на це повідомлення продовжить справу."""
@@ -203,6 +357,30 @@ class Hub:
                 self.say(f"⏳ #{number} продовжую.")
             else:
                 self.say("Продовжити можна лише справу, що стала. Список: /tasks")
+        elif name == "watch":
+            self.say(self.create_watch(rest) if rest else watch_mod.listing(self.watches.all()))
+        elif name == "watches":
+            self.say(watch_mod.listing(self.watches.all()))
+        elif name == "unwatch":
+            gone = number and self.watches.remove(number)
+            self.say(f"Вартового #{number} прибрала." if gone else "Нема такого вартового. Список: /watches")
+        elif name == "brief":
+            if re.fullmatch(r"\d{1,2}[:.]\d{2}", rest):
+                hh, mm = re.split(r"[:.]", rest)
+                prefs = self._json(self.prefs_path, {})
+                prefs["brief"] = f"{int(hh):02d}:{mm}"
+                self._write(self.prefs_path, prefs)
+                self.say(f"Ранковий звіт тепер о {prefs['brief']}.")
+            elif rest.lower() in ("off", "вимк", "ні", "стоп"):
+                prefs = self._json(self.prefs_path, {})
+                prefs["brief"] = "off"
+                self._write(self.prefs_path, prefs)
+                self.say("Ранковий звіт вимкнено. Увімкнути: /brief 08:30")
+            elif rest.lower() in ("зараз", "now"):
+                self.say(self.morning_brief())
+            else:
+                self.say(f"Ранковий звіт: {self.brief_time()}. Змінити: /brief 08:30, вимкнути: /brief off, "
+                         "просто зараз: /brief зараз")
         return True
 
     def _answer_task(self, message: dict) -> bool:
@@ -285,6 +463,7 @@ class Hub:
         if text.startswith("/start"):
             return
         tg.send_message(chat, self.brain.answer(text))
+        self.note_away(f"розмова: {text[:60]}")
 
     def server_loop(self) -> None:
         while not self.stop.is_set():
@@ -303,6 +482,7 @@ class Hub:
                 for text in self.brain.reminders.due():
                     if self.chat_id:
                         tg.send_message(self.chat_id, f"⏰ {text}")
+                        self.note_away(f"нагадала: {text[:50]}")
             except Exception as e:
                 log.warning(f"Нагадування: {tg._hide_token(e)}")
 
@@ -323,8 +503,9 @@ class Hub:
                 self.wfile.write(body)
 
             def do_POST(self):
-                """Домашня Лін доручає справу голосом: POST /tasks {"goal": "..."}."""
-                if urllib.parse.urlparse(self.path).path != "/tasks":
+                """Домашня Лін доручає голосом: POST /tasks {"goal"} чи /watches {"text": "щоранку ..."}."""
+                path = urllib.parse.urlparse(self.path).path
+                if path not in ("/tasks", "/watches"):
                     return self._send(404, {"error": "нема"})
                 if self.headers.get("X-Lin-Key") != key:
                     return self._send(403, {"error": "чужий"})
@@ -332,18 +513,22 @@ class Hub:
                     body = json.loads(self.rfile.read(int(self.headers.get("Content-Length", 0)) or 0) or b"{}")
                 except ValueError:
                     return self._send(400, {"error": "не JSON"})
+                if path == "/watches":
+                    return self._send(200, {"text": hub.create_watch(str(body.get("text", "")), "voice")})
                 self._send(200, {"text": hub.create_task(str(body.get("goal", "")), body.get("source", "voice"))})
 
             def do_GET(self):
                 url = urllib.parse.urlparse(self.path)
                 if url.path == "/health":
                     return self._send(200, {"ok": True, "home": hub.router.home_online()})
-                if url.path not in ("/home/updates", "/tasks"):
+                if url.path not in ("/home/updates", "/tasks", "/away"):
                     return self._send(404, {"error": "нема"})
                 if self.headers.get("X-Lin-Key") != key:
                     return self._send(403, {"error": "чужий"})
                 if url.path == "/tasks":
                     return self._send(200, {"text": tasks_mod.listing(hub.tasks.all())})
+                if url.path == "/away":
+                    return self._send(200, {"text": hub.away_text()})
                 wait = float(urllib.parse.parse_qs(url.query).get("wait", [LONG_POLL])[0])
                 updates = hub.router.take_home(min(wait, 50), alive=lambda: _peer_alive(self.connection))
                 if updates is None:
@@ -366,7 +551,7 @@ class Hub:
         except Exception as e:
             log.warning(f"Меню команд: {tg._hide_token(e)}")
         for target in (server.serve_forever, self.server_loop, self.reminder_loop, self.reclaim_loop,
-                       self.task_loop):
+                       self.task_loop, self.watch_loop, self.brief_loop, self.mail_loop):
             threading.Thread(target=target, daemon=True).start()
         log.info(f"Хаб: бот @{me.get('username')}, тунель для домашньої на 127.0.0.1:{PORT}")
         tg.poll(self.on_message, self.stop, on_button=self.on_button)

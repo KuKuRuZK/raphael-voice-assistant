@@ -139,9 +139,10 @@ def chat_tools(messages: list, use_tools: bool = True) -> dict:
 class Agent:
     """Виконує справи зі сховища. notify(текст) і ask(справа, питання) → id повідомлення в Telegram."""
 
-    def __init__(self, store, notify, ask, chat=None):
+    def __init__(self, store, notify, ask, chat=None, on_finish=None):
         self.store, self.notify, self.ask = store, notify, ask
         self.chat = chat or chat_tools
+        self.on_finish = on_finish      # (справа, звіт) → True, якщо звіт уже оброблено (вартові)
 
     def _tool(self, name: str, args: dict) -> str:
         if name == "search":
@@ -208,5 +209,7 @@ class Agent:
             self.notify(f"⚠️ #{task_id}: щось зламалось у мене, деталі в журналі сервера.")
 
     def _finish(self, task_id, report: str, steps: list) -> None:
-        self.store.update(task_id, status="done", result=report.strip(), steps=steps, messages=[])
+        task = self.store.update(task_id, status="done", result=report.strip(), steps=steps, messages=[])
+        if self.on_finish and self.on_finish(task, report.strip()):
+            return
         self.notify(f"✅ #{task_id} готово\n\n{report.strip()}")

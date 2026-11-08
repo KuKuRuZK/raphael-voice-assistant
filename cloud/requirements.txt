@@ -3,3 +3,5 @@ httpx
 openai
 ddgs        # пошук; без нього серверна Лін чесно скаже, що пошуку нема
 defusedxml  # безпечний розбір стрічок новин
+google-api-python-client  # пошта й календар, лише читання (cloud/mail.py)
+google-auth

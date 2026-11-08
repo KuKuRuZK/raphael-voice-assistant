@@ -37,8 +37,17 @@ def test_nothing_to_start(env, popen, monkeypatch, engine, cmd):
 
 
 def test_server_up_checks_the_port(env):
+    """Свій порт, який тест сам відкриває й закриває, а не «там нікого» на 127.0.0.1:9.
+    (2026-11-08 тест падав не через порт: автофікстура в conftest повертала заглушку
+    http_server_up замість справжньої, див. cloud_data.)"""
+    import socket
     real = next(v for m, n, v in env._saved if n == "http_server_up")      # conftest його підміняє
-    env.patch("TTS_HTTP_URL", "http://127.0.0.1:9/v1/audio/speech")       # там нікого
+    srv = socket.socket()
+    srv.bind(("127.0.0.1", 0))
+    srv.listen(1)
+    env.patch("TTS_HTTP_URL", f"http://127.0.0.1:{srv.getsockname()[1]}/v1/audio/speech")
+    assert real(timeout=1.0) is True
+    srv.close()
     assert real(timeout=0.3) is False
 
 

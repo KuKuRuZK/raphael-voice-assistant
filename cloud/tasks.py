@@ -37,12 +37,13 @@ class TaskStore:
             json.dump(data, f, ensure_ascii=False, indent=1)
         os.replace(tmp, self.path)
 
-    def add(self, goal: str, source: str = "telegram") -> dict:
+    def add(self, goal: str, source: str = "telegram", watch_id=None) -> dict:
         with self.lock:
             data = self._load()
             task = {"id": data["next_id"], "goal": goal.strip(), "status": "new", "source": source,
                     "created": time.time(), "updated": time.time(), "steps": [], "messages": [],
-                    "question": "", "question_msg": None, "pending_call": None, "result": ""}
+                    "question": "", "question_msg": None, "pending_call": None, "result": "",
+                    "watch_id": watch_id}
             data["tasks"][str(task["id"])] = task
             data["next_id"] += 1
             self._save(data)
@@ -81,6 +82,8 @@ def line(task: dict) -> str:
 
 
 def listing(tasks: list, limit: int = 10) -> str:
+    # Завершені запуски вартових у списку справ лише заважали б: їх видно в /watches
+    tasks = [t for t in tasks if not (t.get("watch_id") and t["status"] in ("done", "cancelled"))]
     if not tasks:
         return "Доручень нема. Дай справу: /task і що зробити, або просто «доручаю тобі ...»."
     return "Справи:\n" + "\n".join(line(t) for t in tasks[:limit])

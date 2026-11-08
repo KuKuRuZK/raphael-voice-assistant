@@ -281,6 +281,36 @@ def delegate(goal: str) -> str:
     return "Взяла. Зроблю сама на сервері, звіт пришлю в Telegram."
 
 
+def watch(text: str) -> str:
+    """Дія watch_add: «Лін, стеж щоранку за новими вакансіями». Вартовий живе на сервері."""
+    if not cfg.CLOUD_SSH:
+        return "Вартові працюють через сервер, а його в мене не налаштовано."
+    try:
+        return _hub("POST", "/watches", {"text": text}).get("text") or "Поставила вартового."
+    except Exception as e:
+        log.warning(f"Хаб: вартовий не поставлений: {type(e).__name__}: {e}")
+        return "Не достукалась до сервера, вартового не поставила."
+
+
+AWAY_DELAY = 25             # с після старту: спершу привітання, потім «поки тебе не було»
+
+
+def tell_what_happened() -> None:
+    """Що було, поки ПК був вимкнений: хаб вів журнал (розмови, доручення, вартові, листи).
+    Лише вголос удома: з телефона Влад це все й так бачив у чаті."""
+    if not cfg.CLOUD_SSH or runtime.LIN_CHANNEL == "telegram":
+        return
+    try:
+        text = _hub("GET", "/away").get("text")
+    except Exception as e:
+        log.warning(f"Хаб: що було без ПК, не дізналась: {type(e).__name__}: {e}")
+        return
+    if text:
+        from raphael import tts
+        log.info(f"Хаб: {text}")
+        tts.speak(text)
+
+
 def task_list() -> str:
     """Дія task_list: що там з дорученнями."""
     if not cfg.CLOUD_SSH:
@@ -312,7 +342,7 @@ def _dispatch(update: dict) -> None:
 
 def _pull_from_hub() -> None:
     _kill_stale_tunnels()
-    tunnel, pause, failures = None, 2, 0
+    tunnel, pause, failures, told = None, 2, 0, False
     while not _stop.is_set():
         if tunnel is None or tunnel.poll() is not None:
             if tunnel is not None:
@@ -329,6 +359,9 @@ def _pull_from_hub() -> None:
             if failures:
                 log.info("Хаб: звʼязок є")
             failures, pause = 0, 2
+            if not told:                    # перший звʼязок після старту: розповісти, що було без ПК
+                told = True
+                threading.Timer(AWAY_DELAY, tell_what_happened).start()
         except Exception as e:
             failures += 1
             if failures in (1, 10) or failures % 100 == 0:

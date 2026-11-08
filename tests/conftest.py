@@ -66,6 +66,18 @@ def lin():
     return module
 
 
+@pytest.fixture(autouse=True)
+def cloud_data(tmp_path):
+    """Дані серверної Лін (справи, вартові, журнал «поки тебе не було») у тимчасовій теці,
+    а не в теці data репозиторію. Без monkeypatch: автофікстура з ним створювала monkeypatch
+    раніше за env, і на прибиранні він повертав заглушки env назад у модулі (2026-11-08
+    тест голосу отримував заглушку замість справжньої http_server_up)."""
+    from cloud import brain
+    old, brain.DATA = brain.DATA, str(tmp_path)
+    yield
+    brain.DATA = old
+
+
 @pytest.fixture
 def env(lin, tmp_path):
     e = Env()

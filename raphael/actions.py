@@ -339,9 +339,10 @@ def execute_action(action_str: str):
             tts.speak(result)
             return result
 
-        elif t in ("task_add", "task_list"):
-            from raphael import tg_lin          # доручення живуть на сервері (cloud/agent.py)
-            result = tg_lin.delegate(p) if t == "task_add" else tg_lin.task_list()
+        elif t in ("task_add", "task_list", "watch_add"):
+            from raphael import tg_lin          # доручення й вартові живуть на сервері (cloud/)
+            result = (tg_lin.delegate(p) if t == "task_add" else tg_lin.watch(p) if t == "watch_add"
+                      else tg_lin.task_list())
             tts.speak(result)
             return result
 
