@@ -137,7 +137,7 @@ def public_host(host: str) -> bool:
     return bool(infos) and all(ipaddress.ip_address(info[4][0]).is_global for info in infos)
 
 
-def read_page(url: str, limit: int = 6000) -> str:
+def read_page(url: str, limit: int = 10000) -> str:
     """Текст сторінки (без розмітки, скриптів і меню з <head>), обрізаний до limit."""
     url = (url or "").strip()
     for _ in range(5):                                      # перенаправлення вручну, кожне з перевіркою

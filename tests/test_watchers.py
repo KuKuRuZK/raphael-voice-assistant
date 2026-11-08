@@ -178,3 +178,14 @@ def test_agent_has_no_mail_tools():
     from cloud import agent
     names = {t["function"]["name"] for t in agent.TOOLS}
     assert not any("mail" in n or "calendar" in n for n in names)
+
+
+def test_first_check_lists_everything_and_reads_pages_first(tmp_path):
+    """2026-11-08 перший запуск сказав «нового нема», не відкривши жодної сторінки з вакансіями."""
+    ws = watch_mod.WatchStore(str(tmp_path / "w.json"))
+    w = ws.add("вакансії Python: https://djinni.co/jobs/keyword-python/", {"daily": "09:00"})
+    first = watch_mod.task_goal(ws.get(w["id"]))
+    assert "перша перевірка" in first and "ВІДКРИЙ ЇХ read_page першими" in first
+    ws.remember(w["id"], "https://djinni.co/jobs/1")
+    later = watch_mod.task_goal(ws.get(w["id"]))
+    assert watch_mod.NOTHING_NEW in later and "https://djinni.co/jobs/1" in later
