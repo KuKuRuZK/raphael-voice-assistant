@@ -20,6 +20,7 @@ Telegram для Лін: тонкий клієнт Bot API, без сторонн
 Лін у Telegram (мозок, голосові, кнопки) живе в raphael/tg_lin.py.
 """
 import logging
+import re
 import threading
 import time
 
@@ -121,6 +122,14 @@ def split_text(text: str, limit: int = MAX_TEXT) -> list:
         parts.append(text[:cut].strip())
         text = text[cut:].strip()
     return [p for p in parts if p]
+
+
+def plain(text: str) -> str:
+    """Без розмітки Markdown: Telegram без parse_mode показує ** і # як є, а модель їх ставить,
+    хоч проси, хоч ні (звіти агента й вартових 2026-11-08)."""
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text or "", flags=re.S)
+    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s+", "", text)
+    return text.replace("**", "")
 
 
 def send_message(chat_id: int, text: str, **extra) -> None:

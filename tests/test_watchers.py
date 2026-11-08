@@ -189,3 +189,24 @@ def test_first_check_lists_everything_and_reads_pages_first(tmp_path):
     ws.remember(w["id"], "https://djinni.co/jobs/1")
     later = watch_mod.task_goal(ws.get(w["id"]))
     assert watch_mod.NOTHING_NEW in later and "https://djinni.co/jobs/1" in later
+
+
+def test_job_facts_take_only_the_facts(monkeypatch):
+    page = ("Junior Python Developer at Broscorp – Djinni\nCandidates\nJobs\nSalaries\nLog In\n"
+            "Ми шукаємо людину в команду\nПовністю віддалена робота\nFull Remote\n"
+            "Countries where we consider candidates\nМолдова\nДосвід від 1 року\nМи п'ємо каву щоранку\n")
+    monkeypatch.setattr(tools, "read_page", lambda url, limit=20000: page)
+    facts = tools.job_facts("https://djinni.co/jobs/852620/")
+    assert facts.startswith("Junior Python Developer at Broscorp")
+    assert "Full Remote" in facts
+    assert "Countries where we consider candidates\nМолдова" in facts and "Досвід від 1 року" in facts
+    assert "каву" not in facts and "Log In" not in facts
+
+
+def test_agent_can_check_a_job():
+    from cloud import agent
+    assert "check_job" in {t["function"]["name"] for t in agent.TOOLS}
+
+
+def test_telegram_text_without_markdown():
+    assert tg.plain("**Keymakr** – Junior\n## Висновок\nвсе **ок**") == "Keymakr – Junior\nВисновок\nвсе ок"

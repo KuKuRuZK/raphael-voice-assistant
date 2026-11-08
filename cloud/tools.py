@@ -166,6 +166,36 @@ def read_page(url: str, limit: int = 10000) -> str:
     return text[:limit] or "Сторінка порожня."
 
 
+# ── Факти вакансії ───────────────────────────────────────────────────────────
+# 2026-11-08 вартовий за самим списком djinni написав Broscorp «гібрид у Вільнюсі», а на
+# сторінці вакансії Full Remote і кандидати лише з України; Insiders (офіс у Львові) включив
+# усупереч критеріям. Тепер агент перед тим, як включити вакансію, бере з її сторінки лише
+# рядки про формат, місто, країни кандидатів, досвід і зарплату: коротко й без домислів.
+_JOB_FACT = re.compile(
+    r"(?i)remote|віддален|удален|nuotolin|office|офіс|офис|biur|hybrid|гібрид|гибрид|hibrid|"
+    r"vilnius|вільнюс|вильнюс|lithuania|литв|lietuv|lviv|львів|kyiv|київ|warsaw|варшав|"
+    r"countr|країн|стран|europe|європ|европ|worldwide|anywhere|eu\b|ukrain|україн|poland|польщ|"
+    r"experience|досвід|опыт|patirt|years?\b|рок|год|junior|middle|senior|lead|trainee|"
+    r"salary|зарплат|зп\b|\$|€|eur|usd|atlyginim|english|англійськ|английск")
+
+
+def job_facts(url: str) -> str:
+    """Назва вакансії й лише рядки з фактами (формат, місто, країни, досвід, зарплата, мова)."""
+    text = read_page(url, limit=20000)
+    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    if len(lines) < 3:
+        return text
+    facts = []
+    for i, line in enumerate(lines[1:], 1):
+        if len(line) < 200 and _JOB_FACT.search(line):
+            facts.append(line)
+            # Після заголовка «Countries where we consider candidates» чи «Office:» самі країни
+            # й місто стоять наступними рядками і власних ознак можуть не мати
+            if re.search(r"(?i)countr|країн|стран|office:|офіс:", line):
+                facts += [l for l in lines[i + 1:i + 4] if len(l) < 80]
+    return lines[0] + "\n" + "\n".join(dict.fromkeys(facts[:30]))
+
+
 # ── Нагадування ──────────────────────────────────────────────────────────────
 
 def parse_when(text: str, base: datetime = None):

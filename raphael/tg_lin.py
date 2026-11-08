@@ -41,7 +41,7 @@ def say(text: str) -> None:
     if not chat or not clean:
         return
     try:
-        tg.send_message(chat, clean)
+        tg.send_message(chat, tg.plain(clean))
     except Exception as e:
         log.warning(f"Telegram: не надіслала відповідь: {tg._hide_token(e)}")
 

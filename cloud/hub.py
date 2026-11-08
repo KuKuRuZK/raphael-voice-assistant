@@ -199,7 +199,7 @@ class Hub:
 
     def say(self, text: str) -> None:
         if self.chat_id:
-            tg.send_message(self.chat_id, text)
+            tg.send_message(self.chat_id, tg.plain(text))
 
     # ── Доручення ──
     def create_task(self, goal: str, source: str = "telegram") -> str:

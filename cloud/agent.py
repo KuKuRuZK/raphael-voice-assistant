@@ -24,7 +24,8 @@ from cloud import tools
 
 log = logging.getLogger("Лін")
 
-MAX_STEPS = 10              # кроків на одну справу (питання Владу не рахується)
+MAX_STEPS = 14              # кроків на одну справу (питання Владу не рахується); вартовому вакансій
+                            # треба 3-4 списки й перевірка кожної знайденої
 RESULT_LIMIT = 9000         # стільки символів результату бачить модель (у 4000 списку вакансій djinni
                             # влазило меню й кілька перших, 2026-11-08)
 MODELS = [m.strip() for m in (os.environ.get("LIN_AGENT_MODELS") or
@@ -38,6 +39,11 @@ TOOLS = [
         "name": "news", "description": "Свіжі новини за добу зі стрічок (BBC, Українська правда, УНІАН) з датами "
                                        "й посиланнями; тема необовʼязкова.",
         "parameters": {"type": "object", "properties": {"topic": {"type": "string"}}}}},
+    {"type": "function", "function": {
+        "name": "check_job", "description": "Факти вакансії з її власної сторінки: формат (віддалено/офіс/місто), "
+                                            "країни кандидатів, досвід, зарплата, мова. Перевіряй кожну вакансію, "
+                                            "перш ніж включити її у звіт: список сайту часто бреше чи обрізаний.",
+        "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
     {"type": "function", "function": {
         "name": "read_page", "description": "Прочитати текст сторінки за посиланням (з пошуку).",
         "parameters": {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}}},
@@ -152,6 +158,8 @@ class Agent:
             return tools.read_page(args.get("url", ""))
         if name == "news":
             return tools.news(args.get("topic", ""))
+        if name == "check_job":
+            return tools.job_facts(args.get("url", ""))
         return f"Нема такого інструмента: {name}"
 
     def run(self, task_id, answer: str = None) -> None:
@@ -191,7 +199,8 @@ class Agent:
                         self.store.update(task_id, question_msg=self.ask(self.store.get(task_id), question))
                         return
                     result = self._tool(name, args)
-                    verb = {"search": "шукаю", "read_page": "читаю", "news": "новини"}.get(name, name)
+                    verb = {"search": "шукаю", "read_page": "читаю", "news": "новини",
+                            "check_job": "перевіряю"}.get(name, name)
                     steps.append(f"{verb}: {(args.get('query') or args.get('url') or args.get('topic') or '')[:80]}")
                     messages.append({"role": "tool", "tool_call_id": call["id"], "content": result[:RESULT_LIMIT]})
                 self.store.update(task_id, messages=messages, steps=steps)
