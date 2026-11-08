@@ -380,16 +380,25 @@ def _clean(why: str) -> str:
 def _fit_fields(rest: str, facts: str) -> dict:
     """Рядок «так» → поля для звіту й трекера. Модель не дотрималась формату: увесь рядок
     іде в звіт як є, а назва для трекера з першого рядка сторінки."""
-    parts = [p.strip() for p in rest.split("|")]
+    check = "(перевір)" in rest                 # 2026-11-08 модель ставила його й замість назви посади
+    parts = [p.strip() for p in rest.replace("(перевір)", "").split("|")]
+    if len(parts) >= 3 and not parts[0]:
+        parts = parts[1:]
+    if len(parts) == 6 and "," in parts[0]:     # «посада, компанія» одним полем, решта на місці
+        title, _, company = parts[0].rpartition(",")
+        parts = [title, company] + parts[1:]
     if len(parts) >= 7:
         title, company, area, place, salary, match = (_clean(p) for p in parts[:6])
         why = _clean(" | ".join(parts[6:]))
         head = ", ".join(x for x in (title, company) if x)
-        tail = ", ".join(x for x in (place, salary) if x)
+        tail = ", ".join(x for x in (place, salary) if x).rstrip(".")
         line = head + (f": {tail}" if tail else "") + (f". {why}" if why else "")
     else:
-        title, company, area, place, salary, match, why = _name(facts), "", "", "", "", "", _clean(rest)
+        title, company, area, place, salary, match = _name(facts), "", "", "", "", ""
+        why = _clean(" ".join(p for p in parts if p))
         line = why or title
+    if check:
+        line += " (перевір)"
     m = re.search(r"\d{1,3}", match)
     return {"title": title[:120], "company": company[:80], "area": area[:30], "place": place[:80],
             "salary": salary[:60], "match": min(int(m[0]), 100) if m else "", "why": why[:300], "line": line}
@@ -408,13 +417,15 @@ def check_jobs(watch: dict, judge, sleep=time.sleep, home=None) -> dict:
        підійшло, "fits": поля підхожих для трекера (з "url"), "summary": рядок для /watches, "steps": журнал}"""
     found = collect(watch, sleep, home)
     jobs, verdicts = found["jobs"], {}
-    for start in range(0, len(jobs), JUDGE_BATCH):
-        batch = jobs[start:start + JUDGE_BATCH]
-        for n, yes, rest in VERDICT_RE.findall(judge(judge_prompt(watch["goal"], batch)) or ""):
-            if 1 <= int(n) <= len(batch):
-                link, facts = batch[int(n) - 1]
-                ok = yes.lower() in ("так", "yes")
-                verdicts[link] = (ok, _fit_fields(rest, facts) if ok else _clean(rest))
+    for attempt in range(2):                    # другий прохід лише для тих, про які модель змовчала
+        left = [(l, f) for l, f in jobs if l not in verdicts]
+        for start in range(0, len(left), JUDGE_BATCH):
+            batch = left[start:start + JUDGE_BATCH]
+            for n, yes, rest in VERDICT_RE.findall(judge(judge_prompt(watch["goal"], batch)) or ""):
+                if 1 <= int(n) <= len(batch) and batch[int(n) - 1][0] not in verdicts:
+                    link, facts = batch[int(n) - 1]
+                    ok = yes.lower() in ("так", "yes")
+                    verdicts[link] = (ok, _fit_fields(rest, facts) if ok else _clean(rest))
     fit = [(l, verdicts[l][1]) for l, _ in jobs if l in verdicts and verdicts[l][0]]
     rejected = []
     for link, facts in jobs:                    # назва з коду, якщо модель її в рядку не написала

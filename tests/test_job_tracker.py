@@ -177,3 +177,36 @@ def test_home_buttons_still_go_home(hub):
     h.router.take_home(wait=0)
     h.on_button({"id": "q", "from": {"id": 111}, "data": "a1b2c3d4e5:yes"})
     assert h.router.take_home(wait=0) == [{"callback_query": {"id": "q", "from": {"id": 111}, "data": "a1b2c3d4e5:yes"}}]
+
+
+
+@pytest.mark.parametrize("rest,line", [
+    # 2026-11-08 #5: посада й компанія одним полем, решта зсунулась
+    ("Intern Full Stack Engineer, Digis | Web | віддалено |  | 70 | стажування, junior, remote (перевір)",
+     "Intern Full Stack Engineer, Digis: віддалено. стажування, junior, remote (перевір)"),
+    # «(перевір)» на місці посади
+    ("(перевір) | Junior Frontend Developer | Mbunity | Web | віддалено |  | 75 | junior, React",
+     "Junior Frontend Developer, Mbunity: віддалено. junior, React (перевір)"),
+    # зарплата з крапкою в кінці: без «..»
+    ("Automation Test Engineer | Elgama | QA | Vilnius, hybrid | 3600-4400 €/міс. | 70 | гібрид у Вільнюсі",
+     "Automation Test Engineer, Elgama: Vilnius, hybrid, 3600-4400 €/міс. гібрид у Вільнюсі"),
+])
+def test_fit_line_survives_sloppy_fields(rest, line):
+    f = watch_mod._fit_fields(rest, "Назва зі сторінки\n")
+    assert f["line"] == line and "|" not in f["line"]
+
+
+def test_silent_jobs_get_a_second_ask(monkeypatch):
+    """2026-11-08 модель не відповіла про 10 з 30 вакансій: другий прохід лише для них."""
+    links = [f"https://djinni.co/jobs/{n}-job/" for n in range(1, 4)]
+    monkeypatch.setattr(tools, "page_links", lambda url: (links, None))
+    monkeypatch.setattr(tools, "page_text", lambda url, limit=10000: (f"Job {url}\nRemote\nWorldwide\n", None))
+    asked = []
+
+    def judge(prompt):
+        asked.append(prompt)
+        return "1 | ні | senior" if len(asked) == 1 else "1 | так | Python Dev | X | Python | віддалено |  | 70 | ок\n2 | ні | лише Україна"
+    out = watch_mod.check_jobs({"id": 1, "goal": "Python https://djinni.co/jobs/?q=python", "seen": ["x"]}, judge,
+                               sleep=lambda s: None)
+    assert len(asked) == 2 and "djinni.co/jobs/1-job" not in asked[1] and "djinni.co/jobs/2-job" in asked[1]
+    assert out["fit"] == 1 and "глянь сам" not in out["report"]

@@ -293,7 +293,9 @@ class Hub:
 
     @staticmethod
     def judge(prompt: str) -> str:
-        return agent_mod.chat_tools([{"role": "user", "content": prompt}], use_tools=False).get("content") or ""
+        # 1500 токенів не вистачало: gpt-oss спершу міркує, і рядки про останні вакансії пачки обрізались
+        return agent_mod.chat_tools([{"role": "user", "content": prompt}], use_tools=False,
+                                    max_tokens=4000).get("content") or ""
 
     # ── Міст до ПК (етап 4) ──
     def send_to_pc(self, task: dict, call_id: str, tool: str, args: dict) -> None:

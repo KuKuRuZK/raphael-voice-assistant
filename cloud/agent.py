@@ -122,7 +122,7 @@ def _for_provider(messages: list, provider: str) -> list:
     return out
 
 
-def chat_tools(messages: list, use_tools=True) -> dict:
+def chat_tools(messages: list, use_tools=True, max_tokens: int = 1500) -> dict:
     """Один крок моделі з інструментами → повідомлення асистента як dict (для історії).
     use_tools: True (звичайні TOOLS), список інструментів (з руками на ПК) або False."""
     from openai import BadRequestError, RateLimitError
@@ -134,7 +134,7 @@ def chat_tools(messages: list, use_tools=True) -> dict:
                 kw = ({"tools": use_tools if isinstance(use_tools, list) else TOOLS, "tool_choice": "auto"}
                       if use_tools else {})
                 r = brain_mod._client(provider).chat.completions.create(
-                    model=model, messages=_for_provider(messages, provider), max_tokens=1500, temperature=0.3,
+                    model=model, messages=_for_provider(messages, provider), max_tokens=max_tokens, temperature=0.3,
                     **brain_mod._kwargs(model), **kw)
                 m = r.choices[0].message
                 out = {"role": "assistant", "content": m.content or ""}
