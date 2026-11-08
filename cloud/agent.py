@@ -57,6 +57,9 @@ TOOLS = [
 ]
 
 
+OPENED_HEAD = "Що я справді відкривала"
+
+
 class Unavailable(Exception):
     pass
 
@@ -229,7 +232,7 @@ class Agent:
         searched = sum(1 for s in steps if s.startswith("шукаю:"))
         if not opened and not searched:
             return ""
-        lines = [f"Що я справді відкривала ({len(opened)} сторінок, пошуків {searched}):"]
+        lines = [f"{OPENED_HEAD} ({len(opened)} сторінок, пошуків {searched}):"]
         lines += [f"- {s}" for s in opened[:12]]
         return "\n".join(lines)
 

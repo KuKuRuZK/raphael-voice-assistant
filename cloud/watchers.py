@@ -5,17 +5,19 @@
 
 Розклад людськими словами: «щодня 09:00», «щоранку», «щовечора», «кожні 6 год», «щогодини».
 """
+import itertools
 import json
 import os
 import re
 import threading
 import time
+import urllib.parse
 from datetime import datetime, timedelta
 
 from cloud import tools
 
 NOTHING_NEW = "нового нема"
-SEEN_KEEP = 300             # стільки посилань вартовий памʼятає
+SEEN_KEEP = 1500            # стільки посилань вартовий памʼятає (вакансій перевіряє до 20 за раз)
 URL_RE = re.compile(r"https?://[^\s)\]>\"']+")
 
 
@@ -132,6 +134,19 @@ class WatchStore:
             self._save(data)
             return fresh
 
+    def mark_seen(self, wid, links: list, found: int = 0, last: str = "") -> None:
+        """Перевірені посилання → у памʼять (і відкинуті теж, щоб завтра не перевіряти знову)."""
+        with self.lock:
+            data = self._load()
+            w = data["watches"].get(str(wid))
+            if w is None:
+                return
+            w["seen"] = (w["seen"] + [u for u in dict.fromkeys(links) if u not in w["seen"]])[-SEEN_KEEP:]
+            w["found"] += found
+            if last:
+                w["last"] = last
+            self._save(data)
+
 
 def task_goal(watch: dict) -> str:
     """Мета для агента на один запуск вартового: з тим, що вже бачено.
@@ -153,6 +168,224 @@ def task_goal(watch: dict) -> str:
             f"{known}\nКоротко про кожне знайдене, з посиланням.")
 
 
+def title(goal: str) -> str:
+    """Коротка назва вартового для повідомлень: мета без посилань і правил."""
+    text = re.split(r"[;\n]|Сторінки зі списками|ПРАВИЛА", URL_RE.sub("", goal or ""))[0]
+    return re.sub(r"\s+", " ", text).strip(" ,.:")[:70]
+
+
+# ── Вартові вакансій: збирає й перевіряє код, модель лише вирішує ─────────────
+# 2026-11-08 вартовий-агент то зупинявся після одного списку, то писав, що читав DOU, якого
+# не відкривав, то «перевіряв» вакансію з вигаданим номером. Тепер, якщо в меті є сторінки зі
+# списками djinni, DOU чи пошуку LinkedIn, посилання на вакансії збирає код, кожну нову сам
+# відкриває (лише факти: формат, місто, країни, досвід, зарплата), а модель на кожну каже
+# «так» чи «ні». Посилання у звіті з коду, не з моделі, і памʼятаються всі перевірені.
+
+CHECK_PER_RUN = 30          # стільки нових вакансій перевіряє один запуск; решта наступного разу
+JUDGE_BATCH = 6             # стільки вакансій в одному питанні моделі (Groq: 8 тисяч токенів на хвилину)
+FACTS_LIMIT = 900           # символів фактів однієї вакансії для моделі
+PAUSE = {"linkedin.com": 6.0}   # секунд між запитами до сайту: LinkedIn на швидкі поспіль відповідає 429
+PAUSE_DEFAULT = 1.0
+RETRY_429 = 30              # раз за запуск на сайт: почекати й спробувати ще (LinkedIn відпускає швидко)
+SITES = {"djinni.co": "djinni", "jobs.dou.ua": "DOU", "linkedin.com": "LinkedIn"}
+VERDICT_RE = re.compile(r"^\W*(\d{1,2})\W+(так|ні|yes|no)\b[\s|:;,.)\-]*(.*)$", re.I | re.M)
+
+
+def _site(url: str) -> str:
+    host = (urllib.parse.urlsplit(url).hostname or "").lower()
+    return next((s for s in SITES if host == s or host.endswith("." + s)), "")
+
+
+def job_link(href: str):
+    """Посилання на саму вакансію → її постійна адреса (без хвостів ?position=...), інакше None."""
+    site, path = _site(href), urllib.parse.urlsplit(href).path
+    if site == "djinni.co" and re.fullmatch(r"/jobs/\d+-[\w-]+/?", path):
+        return f"https://djinni.co{path.rstrip('/')}/"
+    if site == "jobs.dou.ua" and re.fullmatch(r"/companies/[\w.-]+/vacancies/\d+/?", path):
+        return f"https://jobs.dou.ua{path.rstrip('/')}/"
+    m = re.search(r"/jobs/view/(?:[^/]*-)?(\d{6,})/?$", path) if site == "linkedin.com" else None
+    return f"https://www.linkedin.com/jobs/view/{m[1]}/" if m else None
+
+
+def job_sources(goal: str) -> list:
+    """Сторінки зі списками вакансій у меті вартового. Пошук LinkedIn з браузера
+    (linkedin.com/jobs/search/?keywords=...) стає тим самим пошуком для гостя: його LinkedIn
+    віддає без входу (перевірено 2026-11-08 і з сервера, і з дому)."""
+    out = []
+    for url in (u.rstrip(".,;") for u in URL_RE.findall(goal or "")):
+        site, parts = _site(url), urllib.parse.urlsplit(url)
+        if site == "linkedin.com":
+            if "/jobs-guest/jobs/api/seeMoreJobPostings/search" in parts.path:
+                out.append(url)
+            elif parts.path.rstrip("/").endswith("/jobs/search"):
+                out.append("https://www.linkedin.com/jobs-guest/jobs/api/seeMoreJobPostings/search?" + parts.query)
+        elif site and job_link(url) is None:
+            out.append(url)
+    return list(dict.fromkeys(out))
+
+
+def _facts_url(link: str) -> str:
+    """Сторінка вакансії LinkedIn гостеві показує вхід, а цей фрагмент віддає сам опис."""
+    m = re.fullmatch(r"https://www\.linkedin\.com/jobs/view/(\d+)/", link)
+    return f"https://www.linkedin.com/jobs-guest/jobs/api/jobPosting/{m[1]}" if m else link
+
+
+class _Pace:
+    """Пауза перед повторним запитом до того самого сайту, а на 429 ще одна спроба після довшої."""
+
+    def __init__(self, sleep):
+        self.sleep, self.used, self.retried = sleep, set(), set()
+
+    def __call__(self, url: str) -> None:
+        site = _site(url)
+        if site in self.used:
+            self.sleep(PAUSE.get(site, PAUSE_DEFAULT))
+        self.used.add(site)
+
+    def fetch(self, get, url: str):
+        """get(url) → (щось, причина або None); один повтор на сайт за запуск, якщо відповів 429."""
+        self(url)
+        got, error = get(url)
+        site = _site(url)
+        if error and "429" in error and site not in self.retried:
+            self.retried.add(site)
+            self.sleep(RETRY_429)
+            got, error = get(url)
+        return got, error
+
+
+def collect(watch: dict, sleep=time.sleep) -> dict:
+    """Нові вакансії зі списків вартового, кожна з фактами з її власної сторінки.
+    → {"jobs": [(посилання, факти)], "checked": що запамʼятати, "later": скільки нових на потім,
+       "sources": [(список, скільки вакансій або причина)], "blocked": сайти, що обмежили, "steps": журнал}"""
+    seen, pace = set(watch.get("seen") or []), _Pace(sleep)
+    groups, sources, steps = [], [], []
+    for src in job_sources(watch["goal"]):
+        hrefs, error = pace.fetch(tools.page_links, src)
+        links = list(dict.fromkeys(l for l in map(job_link, hrefs) if l))
+        new = [l for l in links if l not in seen]
+        sources.append((src, error or len(links)))
+        steps.append(f"список: {src[:90]} ({error or f'нових {len(new)} з {len(links)}'})")
+        groups.append(new)
+    queue = []                                  # по черзі з кожного списку, щоб жоден не витіснив інші
+    for row in itertools.zip_longest(*groups):
+        for link in row:                        # та сама вакансія буває у двох пошуках LinkedIn
+            if link and link not in queue:
+                queue.append(link)
+    jobs, checked, blocked, later = [], [], set(), 0
+    for link in queue:
+        site = _site(link)
+        if len(jobs) >= CHECK_PER_RUN or site in blocked:
+            later += 1
+            continue
+        text, error = pace.fetch(lambda url: tools.page_text(url, limit=20000), _facts_url(link))
+        if error and ("429" in error or "403" in error or "не відкрилась" in error):
+            blocked.add(site)                   # не запамʼятовуємо: спробуємо наступного разу
+            later += 1
+            steps.append(f"не відкрилась: {link} ({error})")
+            continue
+        checked.append(link)
+        if error:                               # 404 і подібне: вакансію зняли
+            steps.append(f"не відкрилась: {link} ({error})")
+            continue
+        steps.append(f"перевіряю: {link}")
+        head = 3 if site == "linkedin.com" else 1
+        jobs.append((link, tools.facts_of(text, head=head)[:FACTS_LIMIT]))
+    return {"jobs": jobs, "checked": checked, "later": later, "sources": sources,
+            "blocked": sorted(SITES[s] for s in blocked), "steps": steps}
+
+
+def judge_prompt(goal: str, batch: list) -> str:
+    criteria = re.sub(r"\s+", " ", URL_RE.sub("", goal)).strip()
+    jobs = "\n\n".join(f"[{i}]\n{facts}" for i, (_, facts) in enumerate(batch, 1))
+    return ("Ти Лін і допомагаєш Владу шукати роботу. Його критерії:\n"
+            f"{criteria}\n\n"
+            "Нижче нові вакансії: назва й рядки з фактами з їхніх власних сторінок. Для КОЖНОЇ рівно один рядок:\n"
+            "номер | так або ні | посада, компанія: рівень, формат, звідки беруть кандидатів, зарплата; для «ні» "
+            "ще причина\n"
+            "Пиши українською. Чого у фактах нема, просто пропусти, без прочерків. Вирішуй лише за цими фактами, "
+            "нічого не додавай від себе. Якщо фактів не вистачає, щоб відкинути, пиши «так» і в кінці «(перевір)». "
+            "Рівень «Mid-Senior level» у LinkedIn стоїть у більшості вакансій, і в middle теж: сам по собі це не "
+            "senior; senior лише тоді, коли Senior чи Lead у назві посади або досвід від 5 років. "
+            "Без розмітки й без нічого, крім цих рядків.\n\n" + jobs)
+
+
+def _clean(why: str) -> str:
+    """Рядок моделі для звіту: «(перевір)» у кінець, без порожніх полів-прочерків і довгих тире."""
+    check = "(перевір)" in why
+    why = URL_RE.sub("", why)                                   # посилання у звіт ставить код, не модель
+    why = re.sub(r"[\u2014\u2013]", "-", why.replace("(перевір)", ""))
+    why = re.sub(r"\s+-\s*(?=,)", "", why)                       # «Twoday - , офіс» → «Twoday, офіс»
+    why = re.sub(r"(?<=[,:])\s*-\s*(?=[,;]|$)", "", why)       # «Senior, прочерк, прочерк; ...» → «Senior,,; ...»
+    why = re.sub(r",\s*(?=[,;]|$)", "", why)
+    why = re.sub(r":\s*,", ":", why)
+    why = re.sub(r"^[\s|:;,.\-]+|[\s|:;,\-]+$", "", why)
+    return why + (" (перевір)" if check else "")
+
+
+def _name(facts: str) -> str:
+    """Назва вакансії з першого рядка її сторінки, без хвоста з назвою сайту (DOU, Djinni)."""
+    first = (facts or "").strip().splitlines()[0] if (facts or "").strip() else ""
+    first = re.sub(r"\s*[|\u2013\u2014-]+\s*(Djinni|DOU|LinkedIn)\b.*$", "", first, flags=re.I)
+    return re.sub(r"[\u2014\u2013]", "-", first).strip()[:70]
+
+
+def check_jobs(watch: dict, judge, sleep=time.sleep) -> dict:
+    """Один запуск вартового вакансій. judge(питання) → відповідь моделі текстом.
+    → {"report": текст для Влада або "" (мовчати), "seen": перевірені посилання, "fit": скільки
+       підійшло, "summary": рядок для /watches, "steps": журнал}"""
+    found = collect(watch, sleep)
+    jobs, verdicts = found["jobs"], {}
+    for start in range(0, len(jobs), JUDGE_BATCH):
+        batch = jobs[start:start + JUDGE_BATCH]
+        for n, yes, why in VERDICT_RE.findall(judge(judge_prompt(watch["goal"], batch)) or ""):
+            if 1 <= int(n) <= len(batch):
+                verdicts[batch[int(n) - 1][0]] = (yes.lower() in ("так", "yes"), _clean(why))
+    fit = [(l, verdicts[l][1]) for l, _ in jobs if l in verdicts and verdicts[l][0]]
+    rejected = []
+    for link, facts in jobs:                    # назва з коду, якщо модель її в рядку не написала
+        if link in verdicts and not verdicts[link][0]:
+            why, name = verdicts[link][1], _name(facts)
+            rejected.append(why if not name or name[:12].lower() in why.lower() else f"{name}: {why}")
+    unclear = [l for l, _ in jobs if l not in verdicts]
+    first = not watch.get("seen")
+    broken = bool(found["sources"]) and all(isinstance(n, str) for _, n in found["sources"])
+
+    lines = []
+    if broken:
+        lines.append("Жодна сторінка зі списком не відкрилась: " +
+                     "; ".join(f"{SITES[_site(s)]}: {n}" for s, n in found["sources"]))
+    if fit:
+        lines.append(f"Підходять {len(fit)} з {len(jobs)} нових:")
+        lines += [f"- {why}\n  {link}" for link, why in fit]
+    if unclear:
+        lines.append("Модель про ці не відповіла, глянь сам:")
+        lines += [f"- {link}" for link in unclear]
+    if not jobs and not broken:
+        lines.append("Нових вакансій у списках нема.")
+    if rejected and (fit or unclear or first):
+        lines.append(f"Відкинула {len(rejected)}:")
+        lines += [f"- {why}" for why in rejected[:8]] + (["- ..."] if len(rejected) > 8 else [])
+    counts, errors = {}, []
+    for src, n in found["sources"]:
+        name = SITES[_site(src)]
+        counts[name] = counts.get(name, 0) + (n if isinstance(n, int) else 0)
+        if isinstance(n, str) and not broken:
+            errors.append(f"{name}: {n.rstrip('.')}")
+    footer = "Списки: " + ", ".join(f"{k} {v}" for k, v in counts.items())
+    if errors:
+        footer += "; не відкрились " + "; ".join(dict.fromkeys(errors))
+    if found["later"]:
+        footer += f"; ще {found['later']} нових перевірю наступного разу"
+    if found["blocked"]:
+        footer += f" ({', '.join(found['blocked'])} обмежив запити)"
+    footer += "."
+    loud = bool(fit or unclear or first or broken)
+    summary = f"{tools.now():%d.%m %H:%M} нових {len(jobs)}, підійшло {len(fit)}"
+    return {"report": "\n".join(lines + ["", footer]).strip() if loud else "", "seen": found["checked"],
+            "fit": len(fit), "summary": summary, "steps": found["steps"]}
+
+
 def listing(watches: list) -> str:
     if not watches:
         return ("Вартових нема. Постав: /watch щодня 09:00 нові вакансії Python у Вільнюсі "
@@ -160,6 +393,7 @@ def listing(watches: list) -> str:
     out = ["Вартові:"]
     for w in watches:
         when = datetime.fromisoformat(w["next"])
-        out.append(f"#{w['id']} {describe(w['schedule'])}: {w['goal'][:70]} "
-                   f"(далі {when:%d.%m %H:%M}, знайдено {w['found']})")
+        last = f", остання {w['last']}" if w.get("last") else ""
+        out.append(f"#{w['id']} {describe(w['schedule'])}: {title(w['goal'])} "
+                   f"(далі {when:%d.%m %H:%M}, знайдено {w['found']}{last})")
     return "\n".join(out)

@@ -137,33 +137,70 @@ def public_host(host: str) -> bool:
     return bool(infos) and all(ipaddress.ip_address(info[4][0]).is_global for info in infos)
 
 
-def read_page(url: str, limit: int = 10000) -> str:
-    """Текст сторінки (без розмітки, скриптів і меню з <head>), обрізаний до limit."""
+def _get(url: str):
+    """Відповідь сторінки з публічною адресою; кожне перенаправлення перевіряється знову.
+    → (відповідь, кінцева адреса, None) або (None, адреса, причина людською мовою)."""
     url = (url or "").strip()
     for _ in range(5):                                      # перенаправлення вручну, кожне з перевіркою
         u = urllib.parse.urlparse(url)
         if u.scheme not in ("http", "https") or not u.hostname:
-            return "Читаю лише сторінки http(s)."
+            return None, url, "Читаю лише сторінки http(s)."
         if not public_host(u.hostname):
-            return "Це внутрішня або недоступна адреса, її не читаю."
+            return None, url, "Це внутрішня або недоступна адреса, її не читаю."
         try:
             r = httpx.get(url, timeout=15, follow_redirects=False,
                           headers={"User-Agent": "Mozilla/5.0 (Lin; personal assistant)"})
         except Exception as e:
-            return f"Сторінка не відкрилась: {type(e).__name__}."
+            return None, url, f"Сторінка не відкрилась: {type(e).__name__}."
         if r.is_redirect and r.headers.get("location"):
             url = urllib.parse.urljoin(url, r.headers["location"])
             continue
-        break
-    else:
-        return "Забагато перенаправлень."
-    if r.status_code >= 400:
-        return f"Сторінка відповіла {r.status_code}."
-    kind = r.headers.get("content-type", "")
-    if "html" not in kind and "text" not in kind and "json" not in kind:
-        return f"Це не текстова сторінка ({kind or 'невідомо що'})."
-    text = html_text(r.text[:2_000_000]) if "html" in kind else r.text
-    return text[:limit] or "Сторінка порожня."
+        if r.status_code >= 400:
+            return None, url, f"Сторінка відповіла {r.status_code}."
+        kind = r.headers.get("content-type", "")
+        if "html" not in kind and "text" not in kind and "json" not in kind:
+            return None, url, f"Це не текстова сторінка ({kind or 'невідомо що'})."
+        return r, url, None
+    return None, url, "Забагато перенаправлень."
+
+
+def page_text(url: str, limit: int = 10000):
+    """→ (текст сторінки без розмітки, None) або ("", причина, чому не відкрилась)."""
+    r, _, error = _get(url)
+    if error:
+        return "", error
+    text = html_text(r.text[:2_000_000]) if "html" in r.headers.get("content-type", "") else r.text
+    return text[:limit] or "Сторінка порожня.", None
+
+
+def read_page(url: str, limit: int = 10000) -> str:
+    """Текст сторінки (без розмітки, скриптів і меню з <head>), обрізаний до limit, або чому не вийшло."""
+    text, error = page_text(url, limit)
+    return error or text
+
+
+class _Links(HTMLParser):
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.hrefs = []
+
+    def handle_starttag(self, tag, attrs):
+        href = dict(attrs).get("href") if tag == "a" else None
+        if href:
+            self.hrefs.append(href.strip())
+
+
+def page_links(url: str):
+    """Посилання сторінки абсолютними адресами, по порядку, без повторів → (список, None або причина)."""
+    r, final, error = _get(url)
+    if error:
+        return [], error
+    p = _Links()
+    try:
+        p.feed(r.text[:2_000_000])
+    except Exception:
+        pass
+    return list(dict.fromkeys(urllib.parse.urljoin(final, h) for h in p.hrefs)), None
 
 
 # ── Факти вакансії ───────────────────────────────────────────────────────────
@@ -181,19 +218,24 @@ _JOB_FACT = re.compile(
 
 def job_facts(url: str) -> str:
     """Назва вакансії й лише рядки з фактами (формат, місто, країни, досвід, зарплата, мова)."""
-    text = read_page(url, limit=20000)
-    lines = [l.strip() for l in text.splitlines() if l.strip()]
+    return facts_of(read_page(url, limit=20000))
+
+
+def facts_of(text: str, head: int = 1) -> str:
+    """Факти вакансії з тексту її сторінки: перші head рядків (назва; у LinkedIn ще компанія й
+    місто) і рядки з ознаками формату, міста, країн, досвіду, зарплати, мови."""
+    lines = [l.strip() for l in (text or "").splitlines() if l.strip()]
     if len(lines) < 3:
         return text
     facts = []
-    for i, line in enumerate(lines[1:], 1):
+    for i, line in enumerate(lines[head:], head):
         if len(line) < 200 and _JOB_FACT.search(line):
             facts.append(line)
             # Після заголовка «Countries where we consider candidates» чи «Office:» самі країни
             # й місто стоять наступними рядками і власних ознак можуть не мати
             if re.search(r"(?i)countr|країн|стран|office:|офіс:", line):
                 facts += [l for l in lines[i + 1:i + 3] if len(l) < 80]
-    return lines[0] + "\n" + "\n".join(dict.fromkeys(facts[:30]))
+    return "\n".join(lines[:head]) + "\n" + "\n".join(dict.fromkeys(facts[:30]))
 
 
 # ── Нагадування ──────────────────────────────────────────────────────────────

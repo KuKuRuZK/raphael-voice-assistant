@@ -234,19 +234,54 @@ class Hub:
             self.note_away(f"доручення #{task['id']} готове, звіт у Telegram")
             return False
         watch = self.watches.get(task["watch_id"])
-        fresh = self.watches.remember(task["watch_id"], report)
-        if watch is None or watch_mod.NOTHING_NEW in report.lower() or (not fresh and "http" in report):
+        # Перелік відкритого в кінці звіту (agent._opened) несе адреси самих списків: у памʼять
+        # «уже бачене» їм не можна, бо наступного разу агент їх не відкрив би (так було 2026-11-08)
+        body = report.split(agent_mod.OPENED_HEAD)[0]
+        fresh = self.watches.remember(task["watch_id"], body)
+        if watch is None or watch_mod.NOTHING_NEW in body.lower() or (not fresh and "http" in body):
             log.info(f"Вартовий #{task['watch_id']}: нового нема")
             return True
-        self.say(f"👀 Вартовий #{watch['id']}: {watch['goal']}\n\n{report}")
-        self.note_away(f"вартовий «{watch['goal'][:40]}» знайшов нове")
+        self.say(f"👀 Вартовий #{watch['id']}: {watch_mod.title(watch['goal'])}\n\n{report}")
+        self.note_away(f"вартовий «{watch_mod.title(watch['goal'])[:40]}» знайшов нове")
         return True
+
+    def run_job_watch(self, task: dict) -> None:
+        """Вартовий вакансій: збирає й перевіряє код (watchers.check_jobs), модель лише каже «так» чи «ні»."""
+        watch = self.watches.get(task["watch_id"])
+        if watch is None or task["status"] in ("done", "failed", "cancelled"):
+            return
+        self.tasks.update(task["id"], status="working")
+        name = watch_mod.title(watch["goal"])
+        try:
+            out = watch_mod.check_jobs(watch, self.judge)
+        except agent_mod.Unavailable as e:
+            log.warning(f"Вартовий #{watch['id']}: моделі не відповіли: {e}")
+            self.tasks.update(task["id"], status="failed", result=f"Моделі не відповіли: {e}")
+            self.say(f"⚠️ Вартовий #{watch['id']} ({name}): моделі не відповіли, вакансії перевірю наступного разу.")
+            return
+        except Exception as e:
+            log.error(f"Вартовий #{watch['id']} впав: {e}", exc_info=True)
+            self.tasks.update(task["id"], status="failed", result=f"Збій: {type(e).__name__}")
+            self.say(f"⚠️ Вартовий #{watch['id']} ({name}): щось зламалось, деталі в журналі сервера.")
+            return
+        self.watches.mark_seen(watch["id"], out["seen"], out["fit"], out["summary"])
+        self.tasks.update(task["id"], status="done", steps=out["steps"], result=out["report"] or out["summary"])
+        if out["report"]:
+            self.say(f"👀 Вартовий #{watch['id']}: {name}\n\n{out['report']}")
+            self.note_away(f"вартовий «{name[:40]}» знайшов нове")
+        log.info(f"Вартовий #{watch['id']}: {out['summary']}{'' if out['report'] else ', мовчу'}")
+
+    @staticmethod
+    def judge(prompt: str) -> str:
+        return agent_mod.chat_tools([{"role": "user", "content": prompt}], use_tools=False).get("content") or ""
 
     def watch_loop(self) -> None:
         while not self.stop.wait(30):
             try:
                 for w in self.watches.due():
-                    task = self.tasks.add(watch_mod.task_goal(w), "watch", watch_id=w["id"])
+                    goal = (f"Вартовий вакансій #{w['id']}: {watch_mod.title(w['goal'])}"
+                            if watch_mod.job_sources(w["goal"]) else watch_mod.task_goal(w))
+                    task = self.tasks.add(goal, "watch", watch_id=w["id"])
                     self.task_queue.put((task["id"], None))
                     log.info(f"Вартовий #{w['id']}: перевірка (справа #{task['id']})")
             except Exception as e:
@@ -347,7 +382,12 @@ class Hub:
                 task_id, answer = self.task_queue.get(timeout=1)
             except queue.Empty:
                 continue
-            self.agent.run(task_id, answer)
+            task = self.tasks.get(task_id)
+            watch = self.watches.get(task["watch_id"]) if task and task.get("watch_id") else None
+            if watch and answer is None and watch_mod.job_sources(watch["goal"]):
+                self.run_job_watch(task)
+            else:
+                self.agent.run(task_id, answer)
 
     def command(self, text: str) -> bool:
         """/task, /tasks, /show, /cancel, /retry (і українські слова). True, якщо це була команда."""
