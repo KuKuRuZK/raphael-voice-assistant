@@ -192,7 +192,7 @@ def job_facts(url: str) -> str:
             # Після заголовка «Countries where we consider candidates» чи «Office:» самі країни
             # й місто стоять наступними рядками і власних ознак можуть не мати
             if re.search(r"(?i)countr|країн|стран|office:|офіс:", line):
-                facts += [l for l in lines[i + 1:i + 4] if len(l) < 80]
+                facts += [l for l in lines[i + 1:i + 3] if len(l) < 80]
     return lines[0] + "\n" + "\n".join(dict.fromkeys(facts[:30]))
 
 
