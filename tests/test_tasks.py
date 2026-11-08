@@ -300,3 +300,16 @@ def test_unparsable_step_is_retried(monkeypatch):
     monkeypatch.setattr(agent_mod, "MODELS", ["groq:openai/gpt-oss-120b"])
     assert agent_mod.chat_tools([{"role": "user", "content": "x"}])["content"] == "Готово."
     assert attempts == ["openai/gpt-oss-120b", "openai/gpt-oss-120b"]
+
+
+
+def test_report_lists_what_was_really_opened(run, store):
+    """Модель писала, що читала DOU, а відкрила лише djinni: перелік тепер з журналу кроків."""
+    agent, script, told, _, _ = run
+    t = store.add("вакансії")
+    script += [call("read_page", url="https://djinni.co/jobs/?q=python"),
+               call("finish", "c2", report="Перевірила djinni і DOU, нічого нема.")]
+    agent.run(t["id"])
+    result = store.get(t["id"])["result"]
+    assert "Що я справді відкривала (1 сторінок, пошуків 0)" in result
+    assert "читаю: https://djinni.co/jobs/?q=python" in result and "dou" not in result.split("відкривала")[1]
