@@ -24,7 +24,8 @@ PROVIDERS = {
     "gemini": ("https://generativelanguage.googleapis.com/v1beta/openai/", "GEMINI_API_KEY"),
 }
 MODELS = [m.strip() for m in (os.environ.get("LIN_CLOUD_MODELS") or
-          "groq:openai/gpt-oss-120b,gemini:gemini-3.1-flash-lite,groq:openai/gpt-oss-20b").split(",") if m.strip()]
+          "gemini:gemini-3.5-flash-lite,gemini:gemini-3.1-flash-lite,groq:openai/gpt-oss-120b,groq:openai/gpt-oss-20b"
+          ).split(",") if m.strip()]
 HISTORY = 12                # останні репліки, що йдуть у запит (6 обмінів)
 # Модель інколи ставить пробіли всередині: «[ ACTION:remind:20|випити воду ]» (2026-11-07),
 # і такий тег пішов Владу текстом
@@ -49,6 +50,8 @@ def _kwargs(model: str) -> dict:
     """Міркувальні моделі без обмеження думають довго й обривають відповідь (як і вдома)."""
     if model.startswith("openai/gpt-oss"):
         return {"reasoning_effort": "low"}
+    if "gemini-3.5-flash-lite" in model:
+        return {"reasoning_effort": "low"}       # основна з 2026-11-11, з легким міркуванням
     if "gemini" in model:
         return {"reasoning_effort": "none"}
     return {}

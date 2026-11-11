@@ -239,6 +239,9 @@ def run(task: str) -> str:
         return "Поки ти граєш, мишкою не керую: мозок зараз у хмарі, а знімки екрана туди не шлю."
     if not cfg.BRAIN_LOCAL_MODEL:
         return "Для цього потрібна локальна модель із зором, а її не налаштовано."
+    if not cfg.BRAIN_LOCAL_TALK and not llm.local_preload():
+        # Gemma вантажиться лише коли треба (BRAIN_PRELOAD вимкнено): ≈30 с на першу справу
+        return "Не змогла завантажити локальну модель для екрана, тож мишкою не керую."
     if not _running.acquire(blocking=False):
         return "Я вже щось роблю на екрані. Тапни правий Ctrl, якщо треба зупинити."
     history, last = [], []

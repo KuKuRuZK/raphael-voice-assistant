@@ -194,3 +194,18 @@ def test_gpu_share_fits_free_video_memory(brain, env, monkeypatch):
     assert gpu_ratio("google/gemma-4-26b-a4b-qat") == 1.0                # велика карта: усе на відеокарту
     monkeypatch.setattr(brain, "_free_vram", lambda: None)
     assert gpu_ratio("google/gemma-4-26b-a4b-qat") == env.get("BRAIN_LOCAL_GPU_RATIO")
+
+
+
+def test_cloud_chain_first_local_only_when_cloud_is_silent(env, brain):
+    """2026-11-11: розмова в хмарі (3.5 Lite, 3.1 Lite, gpt-oss-120b і її запасна 20b), локальна
+    остання: лише без інтернету. Мишкою (screen_do) вона керує й далі."""
+    env.patch("GROQ_PRIMARY_MODEL", "gemini:gemini-3.5-flash-lite")
+    env.patch("GROQ_FALLBACK_MODEL", "gemini:gemini-3.1-flash-lite")
+    env.patch("CLOUD_RESERVE_MODEL", "openai/gpt-oss-120b")
+    env.patch("GROQ_SPARE_MODEL", "openai/gpt-oss-20b")
+    env.patch("BRAIN_LOCAL_TALK", False)
+    assert brain.main_model() == "gemini:gemini-3.5-flash-lite"
+    assert brain._candidates(brain.main_model(), None) == [
+        "gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite", "openai/gpt-oss-120b", "openai/gpt-oss-20b", LOCAL]
+    assert brain._model_kwargs("gemini:gemini-3.5-flash-lite") == {"reasoning_effort": "low"}

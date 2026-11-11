@@ -239,17 +239,20 @@ def _candidates(model: str, fallback) -> list:
     if fallback is not None and not fallback:
         return [model]
     out = [model]
-    extra = (_fallback_for(model) if fallback is None else fallback, cfg.OFFLINE_MODEL)
+    extra = (_fallback_for(model) if fallback is None else fallback, cfg.CLOUD_RESERVE_MODEL, cfg.OFFLINE_MODEL)
     if _is_local(model) and model == cfg.BRAIN_LOCAL_MODEL:
-        extra = (cfg.GROQ_PRIMARY_MODEL, cfg.GROQ_FALLBACK_MODEL)   # локальна не впоралась: обидві хмарні
+        extra = (cfg.GROQ_PRIMARY_MODEL, cfg.GROQ_FALLBACK_MODEL, cfg.CLOUD_RESERVE_MODEL)   # локальна не впоралась
     elif cfg.BRAIN_LOCAL_MODEL and not runtime.GAME:
         extra = (*extra, cfg.BRAIN_LOCAL_MODEL)                     # хмара мовчить (ліміт, 503): остання надія
     for m in extra:
         if m and m not in out:
             out.append(m)
     spare = cfg.GROQ_SPARE_MODEL                    # той самий Groq, але окремий ліміт за хвилину
-    if spare and cfg.GROQ_PRIMARY_MODEL in out and spare not in out:
-        out.insert(out.index(cfg.GROQ_PRIMARY_MODEL) + 1, spare)
+    # одразу за першою моделлю Groq у черзі (без «провайдер:» на початку): основною чи третьою
+    anchor = next((m for m in (cfg.GROQ_PRIMARY_MODEL, cfg.CLOUD_RESERVE_MODEL)
+                   if m and m in out and ":" not in m.split("/", 1)[0]), None)
+    if spare and anchor and spare not in out:
+        out.insert(out.index(anchor) + 1, spare)
     return out
 
 
@@ -695,6 +698,10 @@ def _model_kwargs(model: str) -> dict:
         # з порожньою відповіддю; з "none" відповідь за ≈1 с. enable_thinking
         # і "low" вона ігнорує (перевірено 2026-11-02, LM Studio 0.4).
         return {"reasoning_effort": "none"}
+    if "flash-lite" in m and "gemini-3.5" in m:
+        # 3.5 Flash Lite основна з 2026-11-11: на тесті з пастками 10 з 10 саме з легким
+        # міркуванням; "low" не дає їй обірвати відповідь, як «none» у старших
+        return {"reasoning_effort": "low"}
     if "gemini-3.7" in m or "-pro" in m:
         # Ці беремо САМЕ заради міркувань — не глушимо їх.
         return {"reasoning_effort": "low"}
@@ -729,8 +736,9 @@ def _choose_model(text: str) -> str:
 
 
 def main_model() -> str:
-    """Основна модель зараз: локальна (BRAIN_LOCAL_MODEL), поки не граєш; у грі хмарна."""
-    if cfg.BRAIN_LOCAL_MODEL and not runtime.GAME:
+    """Основна модель зараз: локальна (BRAIN_LOCAL_MODEL), поки не граєш і поки їй дозволено
+    говорити (BRAIN_LOCAL_TALK); інакше хмарна."""
+    if cfg.BRAIN_LOCAL_MODEL and cfg.BRAIN_LOCAL_TALK and not runtime.GAME:
         return cfg.BRAIN_LOCAL_MODEL
     return cfg.GROQ_PRIMARY_MODEL
 

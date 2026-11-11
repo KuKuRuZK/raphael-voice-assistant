@@ -61,6 +61,10 @@ GROQ_FALLBACK_MODEL = "gemini:gemini-3.1-flash-lite"  # інший провай�
 # за хвилину впиралось у 429 (лог 2026-11-02, 23:31). Запасна модель Groq має свій
 # ліміт і відповідає за секунду, тому стоїть у черзі одразу за основною.
 GROQ_SPARE_MODEL = "openai/gpt-oss-20b"
+# Третя хмарна модель: питаємо, коли основна й резервна не відповіли (денний ліміт, 503).
+# 2026-11-11 основною стала gemini-3.5-flash-lite, резервною 3.1-flash-lite (на тесті з
+# пастками обидві 10 з 10, gpt-oss-120b 8 з 10), а gpt-oss-120b пішла сюди. "" = нема.
+CLOUD_RESERVE_MODEL = ""
 # Коментарі до гри й музики, коли мозок у хмарі (гра): своя модель і свій ліміт,
 # щоб репліки сама від себе не зʼїдали ліміт відповідей Владу. "" = основна модель.
 VIBE_MODEL = "qwen/qwen3.8-27b"
@@ -343,6 +347,11 @@ AVATAR_DIR      = ""
 BRAIN_LOCAL_MODEL   = ""
 BRAIN_FREE_IN_GAME  = True
 BRAIN_PRELOAD       = True
+# Чи говорить локальна модель сама. False: розмова й команди в хмарі (основна, резервна,
+# CLOUD_RESERVE_MODEL), а локальна лише без інтернету (остання в черзі) і для мишки
+# (screen_do: знімки екрана з компʼютера не йдуть). Тоді й BRAIN_PRELOAD варто вимкнути:
+# Gemma вантажиться, лише коли знадобилась, а не тримає 7 ГБ про запас.
+BRAIN_LOCAL_TALK    = True
 # 8192: промт ≈4,5 тис. токенів, історія ≈1-2 тис., відповідь до 450. 16384 у Gemma 26B
 # забирав ще ≈1 ГБ відеопамʼяті, якої й так бракує (2026-11-07). gpt-oss із роздумами
 # хотіла більше, але вона вже не основна.
@@ -386,7 +395,7 @@ def _load_config():
         "VIBE_ENABLED", "VIBE_INTERVAL", "VIBE_MAX_PER_HOUR", "VIBE_GAME_EVERY_MIN",
         "VIBE_MUSIC_CHANCE", "VIBE_MUSIC_MIN_GAP_MIN", "VIBE_GAME_EXES", "VIBE_GAME_IGNORE",
         "AVATAR_ENABLED", "AVATAR_URL", "AVATAR_INTERVAL", "AVATAR_DIR",
-        "BRAIN_LOCAL_MODEL", "BRAIN_FREE_IN_GAME", "BRAIN_PRELOAD", "BRAIN_LOCAL_CONTEXT", "BRAIN_LOCAL_VRAM_SPARE", "BRAIN_LOCAL_GPU_RATIO", "LMS_EXE",
+        "BRAIN_LOCAL_MODEL", "BRAIN_LOCAL_TALK", "CLOUD_RESERVE_MODEL", "BRAIN_FREE_IN_GAME", "BRAIN_PRELOAD", "BRAIN_LOCAL_CONTEXT", "BRAIN_LOCAL_VRAM_SPARE", "BRAIN_LOCAL_GPU_RATIO", "LMS_EXE",
     ]
     applied = []
     for k in simple:

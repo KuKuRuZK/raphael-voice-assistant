@@ -33,13 +33,16 @@
   "MONITOR_GMAIL_AUTOSTART": true,
   "MAIL_TRIAGE_ENABLED": true,
 
-  "GROQ_PRIMARY_MODEL": "openai/gpt-oss-120b",
+  "GROQ_PRIMARY_MODEL": "gemini:gemini-3.5-flash-lite",
   "GROQ_FALLBACK_MODEL": "gemini:gemini-3.1-flash-lite",
+  "CLOUD_RESERVE_MODEL": "openai/gpt-oss-120b",
   "FAST_MODEL": "",
   "VISION_MODEL": "gemini:gemini-3.1-flash-lite",
 
   "WAKE_ENGINE": "whisper",
   "BRAIN_LOCAL_MODEL": "lmstudio:google/gemma-4-26b-a4b-qat",
+  "BRAIN_LOCAL_TALK": false,
+  "BRAIN_PRELOAD": false,
   "AVATAR_DIR": "C:\\AI\\projects\\lin_avatar",
   "TTS_ENGINE": "http",
   "TTS_HTTP_VOICE": "Анастасія Павленко",

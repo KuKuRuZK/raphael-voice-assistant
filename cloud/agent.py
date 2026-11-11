@@ -30,7 +30,7 @@ MAX_STEPS = 14              # кроків на одну справу (пита�
 RESULT_LIMIT = 9000         # стільки символів результату бачить модель (у 4000 списку вакансій djinni
                             # влазило меню й кілька перших, 2026-11-08)
 MODELS = [m.strip() for m in (os.environ.get("LIN_AGENT_MODELS") or
-          "groq:openai/gpt-oss-120b,gemini:gemini-3.1-flash-lite").split(",") if m.strip()]
+          "gemini:gemini-3.5-flash-lite,gemini:gemini-3.1-flash-lite,groq:openai/gpt-oss-120b").split(",") if m.strip()]
 
 TOOLS = [
     {"type": "function", "function": {
