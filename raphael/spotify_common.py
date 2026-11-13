@@ -26,7 +26,9 @@ SCOPES = " ".join([
 # Необовʼязкові дозволи: spotify_auth.py їх просить, але без них решта працює.
 # Якби «лайки» стояли в SCOPES, старий токен перестав би проходити перевірку,
 # і до повторного входу зламалась би вся музика, а не лише лайки.
-OPTIONAL_SCOPES = ["user-library-modify"]   # лайкнути трек / прибрати лайк
+OPTIONAL_SCOPES = ["user-library-modify",   # лайкнути трек / прибрати лайк
+                   "playlist-modify-private", "playlist-modify-public",   # Лін збирає плейлисти (music_mix)
+                   "user-top-read"]             # улюблені виконавці для підбірок
 AUTH_SCOPES = " ".join(SCOPES.split() + OPTIONAL_SCOPES)
 
 

@@ -161,19 +161,31 @@ def execute_action(action_str: str):
                   f"Не знайшла процес «{p}».")
 
         # ── SPOTIFY ──
+        elif t == "spotify_mix":
+            from raphael import music_mix
+            try:
+                tts.speak(music_mix.mix(p))
+            except Exception as e:
+                log.error(f"Spotify підбірка: {e}", exc_info=True)
+                tts.speak("Не вийшло поставити підбірку." if "No active device" not in str(e)
+                          else "Відкрий Spotify на телефоні або ПК, щоб я могла відтворити.")
+
+        elif t == "spotify_make_playlist":
+            from raphael import music_mix
+            try:
+                tts.speak(music_mix.make_playlist(p))
+            except Exception as e:
+                log.error(f"Spotify плейлист: {e}", exc_info=True)
+                tts.speak("Не вийшло зібрати плейлист.")
+
         elif t == "spotify_play":
             if p:
-                # Спочатку пробуємо через API (пошук + відтворення)
-                sp = music._get_spotipy()
+                # Спочатку через API: найсхожіший трек («Виконавець - Назва»), а не перший-ліпший
+                from raphael import music_mix
                 played = False
-                if sp:
+                if music._get_spotipy():
                     try:
-                        results = sp.search(q=p, type="track", limit=1)
-                        tracks = results.get("tracks", {}).get("items", [])
-                        if tracks:
-                            music.with_device(sp, lambda: sp.start_playback(uris=[tracks[0]["uri"]]))
-                            log.info(f"Spotify API play: {tracks[0]['name']}")
-                            played = True
+                        played = bool(music_mix.play(p))
                     except Exception as e:
                         log.warning(f"Spotify API play failed: {e}")
                         if "No active device" in str(e):
