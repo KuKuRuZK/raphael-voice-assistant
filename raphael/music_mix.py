@@ -21,13 +21,16 @@ from raphael import settings as cfg
 
 log = logging.getLogger("Лін")
 
-MIX_SIZE = 12               # треків у підбірці
+MIX_SIZE = 20               # треків у підбірці (≈година)
 PLAYLIST_SIZE = 20          # треків у зібраному плейлисті
 TASTE_SIZE = 40             # стільки рядків смаку бачить модель
 MIN_MATCH = 1.35            # схожість назви + виконавця (0..2), нижче: «не той трек»; з 1.2 проходили
                             # кавери чужих виконавців (M83 - Midnight City → 828 SOUNDWAVES, 2026-11-13)
 PLAYLIST_SCOPE = "playlist-modify-private"
 
+# «Щось з мого», «улюблене», «лайкнуте»: тоді можна знайоме; інакше лише нове (2026-11-13 Влад: «не те, що я
+# лайкав, його я й так багато слухаю»)
+FAMILIAR_RE = re.compile(r"(?i)\bмо[єїя]\w*|улюблен|лайкн|знайом|що я слухаю|що я слухав")
 _SPLIT = re.compile(r"\s+[-–—]\s+")
 
 
@@ -100,17 +103,20 @@ def find_query(sp, query: str):
     return it["uri"], f"{it['artists'][0]['name']} - {it['name']}"
 
 
-def taste(sp) -> list:
-    """Що Влад слухав і лайкав, «Виконавець - Назва», без повторів; і улюблені виконавці, якщо є дозвіл."""
-    out = []
+def taste(sp):
+    """Що Влад слухав і лайкав → (рядки «Виконавець - Назва» і улюблені виконавці, якщо є дозвіл;
+    множина uri цих треків, щоб не підсовувати йому вже знайоме)."""
+    out, known = [], set()
     try:
         for it in sp.current_user_recently_played(limit=50).get("items", []):
             out.append(f"{it['track']['artists'][0]['name']} - {it['track']['name']}")
+            known.add(it["track"].get("uri"))
     except Exception as e:
         log.debug(f"Смак: нещодавні: {e}")
     try:
-        for it in sp.current_user_saved_tracks(limit=30).get("items", []):
+        for it in sp.current_user_saved_tracks(limit=50).get("items", []):
             out.append(f"{it['track']['artists'][0]['name']} - {it['track']['name']}")
+            known.add(it["track"].get("uri"))
     except Exception as e:
         log.debug(f"Смак: лайкнуті: {e}")
     try:
@@ -118,19 +124,22 @@ def taste(sp) -> list:
             out.append(f"улюблений виконавець: {a['name']}")
     except Exception as e:
         log.debug(f"Смак: улюблені виконавці (потрібен user-top-read): {e}")
-    return list(dict.fromkeys(out))[:TASTE_SIZE]
+    return list(dict.fromkeys(out))[:TASTE_SIZE], known
 
 
-def ask_picks(request: str, taste_lines: list, n: int) -> list:
+def ask_picks(request: str, taste_lines: list, n: int, familiar: bool = False) -> list:
     """Модель-мозок називає n конкретних треків під прохання → [(виконавець, назва)]."""
     known = "\n".join(taste_lines) or "(нема даних)"
     prompt = (f"Влад просить музику: «{request}».\nЩо він останнім часом слухав і лайкав:\n{known}\n\n"
               f"Підбери {n} конкретних треків, які точно є в Spotify і пасують до прохання та його смаку. "
-              "Змішуй знайоме з новим, але схожим; різні виконавці, щонайбільше два треки на виконавця. "
+              + ("Можна брати треки з його списку й схожі на них. " if familiar else
+                 "Лише НОВЕ для нього: жодного треку з цього списку, і краще не найвідоміші хіти, а те, що він "
+                 "навряд чи чув, але того ж духу. Його список лише напрямок смаку. ")
+              + "Різні виконавці, щонайбільше два треки на виконавця. "
               "Якщо прохання про конкретного виконавця чи жанр, тримайся його. "
               f"Відповідь: рівно {n} рядків «Виконавець - Назва», без нумерації, лапок і коментарів.")
     resp = llm.llm_chat(cfg.GROQ_PRIMARY_MODEL, messages=[{"role": "user", "content": prompt}],
-                        max_tokens=700, temperature=0.9)
+                        max_tokens=1500, temperature=0.9)
     text = llm.strip_thinking(resp.choices[0].message.content or "")
     picks = [p for p in (split_pick(l) for l in text.splitlines()) if p]
     return list(dict.fromkeys(picks))[: n + 3]
@@ -154,8 +163,10 @@ def mix(request: str) -> str:
     if not sp:
         return music._spotify_unavailable_msg()
     request = (request or "").strip() or "щось на мій смак"
-    picks = ask_picks(request, taste(sp), MIX_SIZE)
-    tracks = _resolve(sp, picks)[:MIX_SIZE]
+    familiar = bool(FAMILIAR_RE.search(request))
+    lines, known = taste(sp)
+    picks = ask_picks(request, lines, MIX_SIZE + 6, familiar)       # із запасом: частину відсіємо
+    tracks = [t for t in _resolve(sp, picks) if familiar or t[0] not in known][:MIX_SIZE]
     log.info(f"Spotify підбірка «{request}»: модель назвала {len(picks)}, знайшла {len(tracks)}: "
              f"{[t[1] for t in tracks]}")
     if not tracks:
@@ -189,8 +200,10 @@ def make_playlist(spec: str) -> str:
     if PLAYLIST_SCOPE not in (tok.get("scope") or "").split():
         return ("Збирати плейлисти мені Spotify ще не дозволив. Запусти spotify_auth.bat і увійди ще раз, "
                 "тоді зможу. А поки можу просто ввімкнути підбірку.")
-    picks = ask_picks(about, taste(sp), PLAYLIST_SIZE)
-    tracks = _resolve(sp, picks)[:PLAYLIST_SIZE]
+    familiar = bool(FAMILIAR_RE.search(spec or ""))
+    lines, known = taste(sp)
+    picks = ask_picks(about, lines, PLAYLIST_SIZE + 6, familiar)
+    tracks = [t for t in _resolve(sp, picks) if familiar or t[0] not in known][:PLAYLIST_SIZE]
     if not tracks:
         return "Придумала треки, але в Spotify жодного не знайшла, плейлист не створювала."
     me = sp.current_user()["id"]

@@ -90,8 +90,18 @@ def test_mix_is_her_own_choice_with_taste(mm):
     picks("Tame Impala - The Less I Know The Better\nДaft Punk - Неіснуючий трек\n1. Arctic Monkeys - 505\nкоментар")
     said = music_mix.mix("щось спокійне на вечір")
     assert "щось спокійне на вечір" in asked[0] and "Arctic Monkeys - 505" in asked[0]   # смак Влада в промті
-    assert sp.played == [["spotify:track:Tame Impala-The Less I Know The Better", "spotify:track:Arctic Monkeys-505"]]
-    assert said == "Поставила 2 треки. Почнемо з Tame Impala - The Less I Know The Better."
+    # 505 він уже слухав: за замовчуванням лише нове, хоч модель його й назвала
+    assert sp.played == [["spotify:track:Tame Impala-The Less I Know The Better"]]
+    assert said == "Поставила 1 трек. Почнемо з Tame Impala - The Less I Know The Better."
+    assert "Лише НОВЕ для нього" in asked[0]
+
+
+def test_familiar_only_when_asked(mm):
+    music_mix, sp, picks, asked = mm
+    picks("Arctic Monkeys - 505\nTame Impala - The Less I Know The Better")
+    music_mix.mix("щось з мого улюбленого")
+    assert sp.played == [["spotify:track:Arctic Monkeys-505", "spotify:track:Tame Impala-The Less I Know The Better"]]
+    assert "Лише НОВЕ" not in asked[0]
 
 
 def test_mix_when_nothing_found_says_so(mm):
@@ -108,10 +118,11 @@ def test_playlist_needs_permission_first(mm):
 def test_playlist_is_built_saved_and_played(mm):
     music_mix, sp, picks, _ = mm
     sp.auth_manager.cache_handler.get_cached_token = lambda: {"scope": "playlist-modify-private user-read-playback-state"}
-    picks("Imagine Dragons - Believer\nDaft Punk - Get Lucky")
+    picks("Imagine Dragons - Believer\nDaft Punk - Get Lucky\nTame Impala - The Less I Know The Better")
     said = music_mix.make_playlist("Для пробіжки|енергійне для бігу")
     assert sp.created == [("vlad", "Для пробіжки", False, "Зібрала Лін: енергійне для бігу")]
-    assert sp.added == [("pl1", ["spotify:track:Imagine Dragons-Believer", "spotify:track:Daft Punk-Get Lucky"])]
+    assert sp.added == [("pl1", ["spotify:track:Imagine Dragons-Believer",          # Get Lucky лайкнутий: не новий
+                                 "spotify:track:Tame Impala-The Less I Know The Better"])]
     assert sp.played == ["spotify:playlist:pl1"] and "2 треки" in said
 
 
