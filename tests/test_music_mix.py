@@ -126,3 +126,10 @@ def test_prompt_sends_vague_requests_to_mix():
     import inspect
     src = inspect.getsource(prompt)
     assert "spotify_mix:опис" in src and "НІКОЛИ spotify_play з одним словом" in src
+
+
+def test_cover_by_someone_else_is_not_the_original(mm):
+    """2026-11-13 модель хотіла M83 - Midnight City, а знайшовся кавер 828 SOUNDWAVES."""
+    music_mix, sp, _, _ = mm
+    sp.catalog.append(track("828 SOUNDWAVES", "midnight city"))
+    assert music_mix.find(sp, "M83", "Midnight City") is None

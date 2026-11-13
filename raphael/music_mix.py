@@ -24,7 +24,8 @@ log = logging.getLogger("Лін")
 MIX_SIZE = 12               # треків у підбірці
 PLAYLIST_SIZE = 20          # треків у зібраному плейлисті
 TASTE_SIZE = 40             # стільки рядків смаку бачить модель
-MIN_MATCH = 1.2             # схожість назви + виконавця (0..2), нижче: «не той трек»
+MIN_MATCH = 1.35            # схожість назви + виконавця (0..2), нижче: «не той трек»; з 1.2 проходили
+                            # кавери чужих виконавців (M83 - Midnight City → 828 SOUNDWAVES, 2026-11-13)
 PLAYLIST_SCOPE = "playlist-modify-private"
 
 _SPLIT = re.compile(r"\s+[-–—]\s+")
