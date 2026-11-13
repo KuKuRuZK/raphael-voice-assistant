@@ -144,3 +144,17 @@ def test_cover_by_someone_else_is_not_the_original(mm):
     music_mix, sp, _, _ = mm
     sp.catalog.append(track("828 SOUNDWAVES", "midnight city"))
     assert music_mix.find(sp, "M83", "Midnight City") is None
+
+
+
+def test_new_means_new_artists_too(mm):
+    """Влад: «не те, що я й так слухаю». Нові треки знайомих виконавців щонайбільше чверть підбірки."""
+    music_mix, _, _, _ = mm
+    known = {"spotify:track:old", "artist:arctic monkeys"}
+    found = [("spotify:track:old", "Arctic Monkeys - 505")] + \
+            [(f"spotify:track:am{i}", f"Arctic Monkeys - Нова {i}") for i in range(5)] + \
+            [(f"spotify:track:n{i}", f"Новий {i} - Трек") for i in range(5)]
+    out = music_mix._fresh(found, known, 8)
+    assert [u for u, _ in out] == ["spotify:track:am0", "spotify:track:am1",
+                                   "spotify:track:n0", "spotify:track:n1", "spotify:track:n2", "spotify:track:n3",
+                                   "spotify:track:n4"]
