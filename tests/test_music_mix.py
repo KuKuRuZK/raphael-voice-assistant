@@ -158,3 +158,18 @@ def test_new_means_new_artists_too(mm):
     assert [u for u, _ in out] == ["spotify:track:am0", "spotify:track:am1",
                                    "spotify:track:n0", "spotify:track:n1", "spotify:track:n2", "spotify:track:n3",
                                    "spotify:track:n4"]
+
+
+def test_vibes_know_lin_put_the_music_on(mm, monkeypatch):
+    """2026-11-15: за 10 с після підбірки вайби вигадали «бас у грудях» мрійливому інді. Тепер
+    одразу мовчать, а потім знають, що це її підбірка, і не вигадують звучання."""
+    music_mix, sp, picks, _ = mm
+    from raphael import vibes
+    monkeypatch.setitem(vibes._vibe, "music_last_quip", 0.0)
+    monkeypatch.setitem(vibes._vibe, "lin_music", None)
+    picks("Tame Impala - The Less I Know The Better")
+    music_mix.mix("щось спокійне")
+    assert "щось спокійне" in vibes._lin_music()
+    assert vibes._vibe["music_last_quip"] > 0          # перший коментар не раніше VIBE_MUSIC_MIN_GAP_MIN
+    import inspect
+    assert "не вигадуй, як він звучить" in inspect.getsource(vibes.music_tick)

@@ -123,6 +123,9 @@ def taste(sp):
     except Exception as e:
         log.debug(f"Смак: лайкнуті: {e}")
     try:
+        tok = sp.auth_manager.cache_handler.get_cached_token() or {}
+        if "user-top-read" not in (tok.get("scope") or "").split():
+            raise PermissionError("нема дозволу user-top-read")   # інакше spotipy пише ERROR 403 щоразу
         for a in sp.current_user_top_artists(limit=15, time_range="medium_term").get("items", []):
             out.append(f"улюблений виконавець: {a['name']}")
             known.add("artist:" + a["name"].lower())
@@ -192,7 +195,17 @@ def mix(request: str) -> str:
     if not tracks:
         return "Придумала треки, але в Spotify жодного не знайшла. Скажи інакше, що хочеш."
     music.with_device(sp, lambda: sp.start_playback(uris=[t[0] for t in tracks]))
+    _started(f"підбірка на прохання «{request}»")
     return f"Поставила {_tracks(len(tracks))}. Почнемо з {tracks[0][1]}."
+
+
+def _started(about: str):
+    """Сказати вайбам, що музику ввімкнула сама Лін (щоб не коментували одразу й не вигадували)."""
+    try:
+        from raphael import vibes
+        vibes.lin_started_music(about)
+    except Exception as e:
+        log.debug(f"Вайби не знають про музику: {e}")
 
 
 def play(query: str):
@@ -203,6 +216,7 @@ def play(query: str):
     hit = find_query(sp, query)
     if hit:
         music.with_device(sp, lambda: sp.start_playback(uris=[hit[0]]))
+        _started(f"трек {hit[1]} на прохання Влада")
         log.info(f"Spotify: «{query}» → {hit[1]}")
         return hit[1]
     return None
@@ -232,4 +246,5 @@ def make_playlist(spec: str) -> str:
     sp.playlist_add_items(pl["id"], [t[0] for t in tracks])
     log.info(f"Spotify плейлист «{name}»: {[t[1] for t in tracks]}")
     music.with_device(sp, lambda: sp.start_playback(context_uri=pl["uri"]))
+    _started(f"плейлист «{name}»: {about}")
     return f"Зібрала плейлист «{name}», {_tracks(len(tracks))}, і вмикаю."

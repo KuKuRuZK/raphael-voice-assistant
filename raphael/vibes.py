@@ -25,9 +25,26 @@ log = logging.getLogger("Лін")
 _GAME_ROOTS = ("\\steamapps\\common", "\\epic games", "\\gog galaxy\\games")
 # Службові exe в теках ігор: деінсталятори й репортери падінь
 _NOT_GAME_EXE = ("unins", "crashreport", "unitycrash")
+LIN_MUSIC_FRESH = 90 * 60     # с: стільки вважаємо, що грає музика, яку поставила Лін
 
 _vibe = {"game": None, "game_since": 0.0, "game_last_quip": 0.0,
-          "track": None, "artist": None, "music_last_quip": 0.0, "said": []}
+          "track": None, "artist": None, "music_last_quip": 0.0, "said": [], "lin_music": None}
+
+
+def lin_started_music(about: str):
+    """Лін сама щойно ввімкнула музику (підбірка, трек, плейлист) і вже про це сказала.
+    2026-11-15: за 10 с після «Поставила 20 треків» вайби додали «бас прям в грудях пробиває,
+    неон і ніч» до мрійливого інді Slow Pulp: модель не чує звуку й вигадала. Тож одразу не
+    коментуємо, а пізніше коментар знає, що це за підбірка."""
+    _vibe["lin_music"], _vibe["lin_music_at"] = about, time.time()
+    _vibe["music_last_quip"] = time.time()
+
+
+def _lin_music():
+    """Що ставила Лін, якщо це було не давніше за LIN_MUSIC_FRESH (далі Влад міг перемкнути сам)."""
+    if _vibe["lin_music"] and time.time() - _vibe.get("lin_music_at", 0) < LIN_MUSIC_FRESH:
+        return _vibe["lin_music"]
+    return None
 
 
 def toggle(on: bool) -> str:
@@ -160,8 +177,11 @@ def music_tick():
     if first or gap < cfg.VIBE_MUSIC_MIN_GAP_MIN * 60 or random.random() > cfg.VIBE_MUSIC_CHANCE:
         return
     where = f" Влад при цьому грає в {_vibe['game']}." if _vibe["game"] else ""
-    if _say(f"Почався трек «{track}» від {artist}.{where} Кинь щось про вайб цього треку, як подруга, "
-            f"що теж його слухає. Назву повністю не повторюй."):
+    mine = f" Це з музики, яку ти сама поставила: {_lin_music()}." if _lin_music() else ""
+    if _say(f"Почався трек «{track}» від {artist}.{where}{mine} Кинь щось про цей трек чи виконавця, як подруга, "
+            f"що теж його слухає. Ти не чуєш звуку: не вигадуй, як він звучить (бас, темп, інструменти), "
+            f"якщо не знаєш цей трек напевно; тоді краще про виконавця, настрій чи момент. "
+            f"Назву повністю не повторюй."):
         _vibe["music_last_quip"] = time.time()
 
 
