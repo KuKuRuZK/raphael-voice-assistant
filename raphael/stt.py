@@ -15,6 +15,7 @@ from groq import Groq
 
 from raphael import runtime
 from raphael import settings as cfg
+from raphael import stt_local
 from raphael import tts
 from raphael import usage
 
@@ -90,10 +91,20 @@ def _is_noise(text: str) -> bool:
 
 
 def transcribe_file(data: bytes, name: str = "voice.ogg", seconds: float = 0) -> str:
-    """Розпізнати готовий аудіофайл через Groq Whisper: голосове з Telegram (ogg/opus
-    Whisper приймає як є). Без фільтра шуму: голосове надсилають свідомо, і порожнього
-    там не буває. Помилка (нема мережі, ліміт) → виняток, хай бот скаже, що не вийшло."""
+    """Розпізнати готовий аудіофайл: голосове з Telegram. Спершу локальний Whisper (ogg/opus
+    розпаковує av), інакше Groq (приймає як є). Без фільтра шуму: голосове надсилають
+    свідомо, і порожнього там не буває. Помилка (нема мережі, ліміт) → виняток, хай бот
+    скаже, що не вийшло."""
     import io
+    if stt_local.available():
+        try:
+            from faster_whisper import decode_audio
+            text = stt_local.transcribe(decode_audio(io.BytesIO(data), sampling_rate=16000), _WHISPER_PROMPT)
+            if text:
+                usage.record("local:whisper", seconds=seconds)
+                return text
+        except Exception as e:
+            log.warning(f"Локальний Whisper (голосове): {e}")
     result = client.audio.transcriptions.create(
         file=(name, io.BytesIO(data)),
         model="whisper-large-v3-turbo",
@@ -104,6 +115,26 @@ def transcribe_file(data: bytes, name: str = "voice.ogg", seconds: float = 0) ->
     )
     usage.record("groq:whisper-large-v3-turbo", seconds=seconds)
     return (result or "").strip()
+
+
+def _transcribe_local(audio):
+    """Локальний Whisper на відеокарті. → текст, "" (шум чи тиша: далі НЕ питаємо, інакше
+    кожен шум знову йшов би в Groq) або None (не готовий чи впав: питаємо наступного)."""
+    if not stt_local.available():
+        return None
+    import numpy as np
+    raw = audio.get_raw_data(convert_rate=16000, convert_width=2)
+    text = stt_local.transcribe(np.frombuffer(raw, dtype=np.int16).astype(np.float32) / 32768.0,
+                                _WHISPER_PROMPT)
+    if text is None:
+        return None
+    usage.record("local:whisper", seconds=len(raw) / 32000)
+    text = text.strip().lower()
+    if _is_noise(text):
+        log.debug(f"Локальний Whisper: шум, ігнорую: '{text}'")
+        return ""
+    log.debug(f"Локальний Whisper: '{text}'")
+    return text
 
 
 def _transcribe_whisper(audio) -> str:
@@ -235,12 +266,17 @@ LISTEN_BACKOFF_MAX = 30
 
 def _transcribe(audio) -> str:
     """
-    Whisper (найкраще) → Google → Vosk (офлайн, коли немає інтернету).
+    Локальний Whisper (відеокарта) → Groq Whisper → Google → Vosk (офлайн).
+    Локальний сказав «тиша чи шум» (""): далі не питаємо, інакше ліміт Groq знову
+    їли б усі звуки кімнати.
 
     Розпізнаний текст пишеться в лог лише як DEBUG, тобто в lin.log не
     потрапляє: у звичайному режимі сюди приходить усе, що сказали поруч.
     Звернене до Лін логують assistant і confirm («Команда: ...»).
     """
+    local = _transcribe_local(audio)
+    if local is not None:
+        return local
     return (_transcribe_whisper(audio)
             or _transcribe_google(audio)
             or _transcribe_vosk(audio))

@@ -103,6 +103,13 @@ PAUSE_THRESHOLD = 0.9
 # Для Vosk «Лін» надто коротке й рідкісне слово.
 WAKE_ENGINE = "whisper"
 
+# Локальний Whisper на відеокарті (raphael/stt_local.py): перший у черзі розпізнавання,
+# далі Groq, Google, Vosk. 2026-11-15 Groq вичерпав денні 2000 запитів: з WAKE_ENGINE
+# "whisper" туди йде кожна почута фраза. На RX 9070 (torch ROCm) turbo ≈0,3 с на фразу,
+# ≈1,6 ГБ відеопамʼяті; на процесорі 5,6 с, тож без відеокарти локальний не вмикається.
+STT_LOCAL = True
+STT_LOCAL_MODEL = "openai/whisper-large-v3-turbo"
+
 # Якщо True — Лін запитає підтвердження перед відкриттям програм/браузера
 CONFIRM_ACTIONS = True
 
@@ -389,7 +396,7 @@ def _load_config():
         "SYS_MONITOR_ENABLED", "SYS_MONITOR_INTERVAL", "MONITOR_INTERVAL",
         "VISION_MODEL", "VISION_FALLBACK_MODEL", "CALENDAR_TZ", "CALENDAR_REMIND_MINUTES",
         "MAIL_TRIAGE_ENABLED", "MONITOR_GMAIL_AUTOSTART",
-        "FAST_MODEL", "WAKE_ENGINE", "WAKE_WORDS_FIRST", "BRAIN_VAULT", "DIARY_DIR", "JOB_TRACKER_CSV",
+        "FAST_MODEL", "WAKE_ENGINE", "STT_LOCAL", "STT_LOCAL_MODEL", "WAKE_WORDS_FIRST", "BRAIN_VAULT", "DIARY_DIR", "JOB_TRACKER_CSV",
         "OFFLINE_MODEL", "PIPER_EXE", "PIPER_MODEL", "TOOL_CALLING",
         "PERSONA_FILE", "TTS_ENGINE", "TTS_HTTP_URL", "TTS_HTTP_MODEL", "TTS_HTTP_VOICE", "TTS_HTTP_SERVER",
         "VIBE_ENABLED", "VIBE_INTERVAL", "VIBE_MAX_PER_HOUR", "VIBE_GAME_EVERY_MIN",

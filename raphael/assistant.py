@@ -501,6 +501,7 @@ def assistant_loop():
     global MODE
     try:
         log.info("=== Лін запущена ===")
+        stt.stt_local.load_in_background(stt._WHISPER_PROMPT)   # ≈15 с у фоні; поки що Groq
         # Привітання лише своїм голосом і з тілом на екрані: мозок, голос і тіло
         # стартують разом, і Лін заговорює, коли готові всі (голос ≈15 с, тіло ≈10 с)
         t0 = time.monotonic()
