@@ -209,3 +209,11 @@ def test_cloud_chain_first_local_only_when_cloud_is_silent(env, brain):
     assert brain._candidates(brain.main_model(), None) == [
         "gemini:gemini-3.5-flash-lite", "gemini:gemini-3.1-flash-lite", "openai/gpt-oss-120b", "openai/gpt-oss-20b", LOCAL]
     assert brain._model_kwargs("gemini:gemini-3.5-flash-lite") == {"reasoning_effort": "low"}
+
+
+def test_gemini_gets_room_to_think():
+    """2026-11-15: на max_tokens=450 3.5 Flash Lite обірвала «Лови свій вай» без тегу дії."""
+    from raphael import llm
+    assert llm._room_to_think("gemini-3.5-flash-lite", {"max_tokens": 450})["max_tokens"] == llm.GEMINI_MIN_TOKENS
+    assert llm._room_to_think("gemini-3.5-flash-lite", {"max_tokens": 4000})["max_tokens"] == 4000
+    assert llm._room_to_think("openai/gpt-oss-120b", {"max_tokens": 450})["max_tokens"] == 450   # Groq: запас їсть ліміт

@@ -370,6 +370,7 @@ def _llm_call(model: str, messages, **kw):
         resp = _harmony_call(cli, bare, messages, **kw)
         usage.record(model, tokens=_usage_tokens(resp))
         return resp
+    kw = _room_to_think(bare, kw)
     # Інші моделі LM Studio теж можуть ламати формат так само: два повтори
     for attempt in range(3):
         try:
@@ -542,7 +543,7 @@ def llm_stream(model: str, messages, fallback=None, **kw):
             return text, iter(())
         cli, bare = _llm(m)
         stream = cli.chat.completions.create(
-            model=bare, messages=messages, stream=True, **_model_kwargs(bare), **kw)
+            model=bare, messages=messages, stream=True, **_model_kwargs(bare), **_room_to_think(bare, kw))
         usage.record(m)
         pieces = _without_thinking(_stream_text(stream, m))
         return next(pieces, ""), pieces   # чекаємо перший шматок тексту
@@ -674,6 +675,19 @@ def _find_action(reply: str):
         if name != "avatar" and _real_action(name, ""):
             return name, "", True
     return None, None, False
+
+
+GEMINI_MIN_TOKENS = 1500
+
+
+def _room_to_think(model: str, kw: dict) -> dict:
+    """Gemini з міркуванням рахує думання в max_tokens: на 450 відповідь 3.5 Flash Lite
+    обривалась на півслові без тегу дії («Зараз навалю такого, щоб», «Лови свій вай»,
+    2026-11-15 12:20, музика не ввімкнулась). У Gemini ліміт за хвилину 250 тис. токенів і
+    рахує сказане, а не запас, тож запас тут нічого не коштує (на відміну від Groq)."""
+    if "gemini" in (model or "").lower() and (kw.get("max_tokens") or 0) < GEMINI_MIN_TOKENS:
+        kw = {**kw, "max_tokens": GEMINI_MIN_TOKENS}
+    return kw
 
 
 def _model_kwargs(model: str) -> dict:
