@@ -335,11 +335,19 @@ def task_list() -> str:
         return "Не достукалась до сервера."
 
 
+_hub_http = None
+
+
 def _take_from_hub(wait: int = 25):
-    """→ (оновлення Telegram, завдання для ПК від агента на сервері)."""
+    """→ (оновлення Telegram, завдання для ПК від агента на сервері).
+    Один клієнт на весь час: httpx.get щоразу будує новий і з ним контекст TLS
+    із сертифікатами (профайлер 2026-11-15: ≈0,2 с процесора на кожні 25 с)."""
+    global _hub_http
     import httpx
-    r = httpx.get(f"http://127.0.0.1:{cfg.CLOUD_LOCAL_PORT}/home/updates", params={"wait": wait},
-                  headers={"X-Lin-Key": tg.hub_key()}, timeout=wait + 15)
+    if _hub_http is None:
+        _hub_http = httpx.Client()
+    r = _hub_http.get(f"http://127.0.0.1:{cfg.CLOUD_LOCAL_PORT}/home/updates", params={"wait": wait},
+                      headers={"X-Lin-Key": tg.hub_key()}, timeout=wait + 15)
     r.raise_for_status()
     body = r.json()
     return body.get("updates", []), body.get("jobs", [])

@@ -279,7 +279,6 @@ def test_same_job_twice_is_done_once_but_answered_twice(bridge, monkeypatch):
 
 
 def test_home_gets_jobs_from_the_hub_answer(monkeypatch):
-    import httpx
     from raphael import tg_lin
 
     class R:
@@ -289,7 +288,9 @@ def test_home_gets_jobs_from_the_hub_answer(monkeypatch):
         def json(self):
             return {"updates": [{"message": {"text": "привіт"}}], "jobs": [{"id": 1, "tool": "pc_say"}]}
     monkeypatch.setattr(cfg, "TELEGRAM_BOT_TOKEN", "123:abc")
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: R())
+    calls = []
+    monkeypatch.setattr(tg_lin, "_hub_http", type("C", (), {"get": lambda self, *a, **k: calls.append(1) or R()})())
+    assert tg_lin._take_from_hub() == tg_lin._take_from_hub() and calls == [1, 1]   # той самий клієнт
     assert tg_lin._take_from_hub() == ([{"message": {"text": "привіт"}}], [{"id": 1, "tool": "pc_say"}])
 
 
