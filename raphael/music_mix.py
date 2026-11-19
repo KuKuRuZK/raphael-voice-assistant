@@ -32,7 +32,7 @@ PLAYLIST_SCOPE = "playlist-modify-private"
 # «Щось з мого», «улюблене», «лайкнуте»: тоді можна знайоме; інакше лише нове (2026-11-13 Влад: «не те, що я
 # лайкав, його я й так багато слухаю»)
 FAMILIAR_RE = re.compile(r"(?i)\bмо[єїя]\w*|улюблен|лайкн|знайом|що я слухаю|що я слухав")
-_SPLIT = re.compile(r"\s+[-–—]\s+")
+_SPLIT = re.compile(r"\s+[-\u2013\u2014]\s+")
 
 
 def _tracks(n: int) -> str:

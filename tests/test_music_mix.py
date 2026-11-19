@@ -67,7 +67,7 @@ def mm(monkeypatch):
 @pytest.mark.parametrize("line,pick", [
     ("1. Imagine Dragons - Believer", ("Imagine Dragons", "Believer")),
     ("- Tame Impala \u2013 The Less I Know The Better", ("Tame Impala", "The Less I Know The Better")),
-    ("«Daft Punk — Get Lucky»", ("Daft Punk", "Get Lucky")),
+    ("«Daft Punk \u2014 Get Lucky»", ("Daft Punk", "Get Lucky")),
     ("просто текст", None), ("Spider-Man", None),
 ])
 def test_pick_lines(mm, line, pick):
